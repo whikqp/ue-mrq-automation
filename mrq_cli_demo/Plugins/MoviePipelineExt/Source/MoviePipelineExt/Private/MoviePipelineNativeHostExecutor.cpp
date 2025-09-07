@@ -9,6 +9,8 @@
 #include "LevelSequence.h"
 #include "MoviePipelineDeferredPasses.h"
 #include "MoviePipelineImageSequenceOutput.h"
+#include "MoviePipelineGameOverrideSetting.h"
+#include "ShaderCompiler.h"
 
 #define LOCTEXT_NAMESPACE "MoviePipelineExecutorExt"
 
@@ -17,16 +19,41 @@ UMoviePipelineNativeHostExecutor::UMoviePipelineNativeHostExecutor(){}
 void UMoviePipelineNativeHostExecutor::InitFromCommandLineParams()
 {
     FParse::Value(FCommandLine::Get(), TEXT("-JobId="), CurrentJobId);
-    UE_LOG(LogTemp, Log, TEXT("[MRQ] %s Init CurrentJobId: %s"), UTF8_TO_TCHAR(__FUNCTION__), *CurrentJobId);
+    UE_LOG(LogTemp, Log, TEXT("%s Init CurrentJobId: %s"), UTF8_TO_TCHAR(__FUNCTION__), *CurrentJobId);
 
     FParse::Value(FCommandLine::Get(), TEXT("-LevelSequence="), LevelSequencePath);
 	FParse::Value(FCommandLine::Get(), TEXT("-MovieQuality="), MovieQuality);
 	FParse::Value(FCommandLine::Get(), TEXT("-MovieFormat="), MovieFormat);
 
+    switch (MovieQuality)
+    {
+
+    case 0:
+        RenderFrameRate = FFrameRate(24, 1);
+        break;
+
+    case 1:
+        RenderFrameRate = FFrameRate(30, 1);
+        break;
+
+    case 2:
+        RenderFrameRate = FFrameRate(60, 1);
+        break;
+
+    case 3:
+        RenderFrameRate = FFrameRate(120, 1);
+        break;
+
+    default:
+        break;;
+
+    }
+
 }
 
 void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueue* InPipelineQueue)
 {
+
 	InitFromCommandLineParams();
 
 	UWorld* World = FindGameWorld();
@@ -35,11 +62,7 @@ void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueu
     bRendering = false;
     StartSeconds = FPlatformTime::Seconds();
 
-    PollTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateUObject(this, &UMoviePipelineNativeHostExecutor::PollReady),
-        PollIntervalSec
-    );
-
+    
     PendingQueue = NewObject<UMoviePipelineQueue>(FindGameWorld(), TEXT("PendingQueue"));
 	PendingJob = PendingQueue->AllocateNewJob(UMoviePipelineExecutorJob::StaticClass());
     PendingJob->Sequence = FSoftObjectPath(LevelSequencePath);
@@ -47,6 +70,7 @@ void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueu
 
 	MRQ_OutputSetting = Cast<UMoviePipelineOutputSetting>(PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineOutputSetting::StaticClass()));
     MRQ_CommandLineEncoder = Cast<UMoviePipelineCommandLineEncoder>(PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineCommandLineEncoder::StaticClass()));
+    MRQ_GameOverrideSetting = Cast<UMoviePipelineGameOverrideSetting>(PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineGameOverrideSetting::StaticClass()));
 
     ULevelSequence* LevelSequence = Cast<ULevelSequence>(PendingJob->Sequence.TryLoad());
     if (!LevelSequence)
@@ -73,11 +97,20 @@ void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueu
         FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*RenderOutputPath);
     }
 
+    if (FPaths::IsRelative(RenderOutputPath))
+    {
+        RenderOutputPath = FPaths::ConvertRelativePathToFull(RenderOutputPath);
+    }
+    FPaths::NormalizeFilename(RenderOutputPath);
+    FPaths::CollapseRelativeDirectories(RenderOutputPath);
+
     MRQ_OutputSetting->OutputDirectory.Path = RenderOutputPath;
-    MRQ_OutputSetting->OutputFrameRate = FFrameRate(30, 1);
+    MRQ_OutputSetting->bUseCustomFrameRate = true;
+    MRQ_OutputSetting->OutputFrameRate = RenderFrameRate;
     MRQ_OutputSetting->FileNameFormat = TEXT("{sequence_name}.{frame_number}");
 
     MRQ_CommandLineEncoder->Quality = static_cast<EMoviePipelineEncodeQuality>(MovieQuality);
+    MRQ_CommandLineEncoder->bDeleteSourceFiles = true;
 
     PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineDeferredPassBase::StaticClass());
     PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineImageSequenceOutput_PNG::StaticClass());
@@ -86,18 +119,23 @@ void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueu
     DeferredMoviePipeline = NewObject<UMoviePipeline>(World, UMoviePipeline::StaticClass());
     DeferredMoviePipeline->OnMoviePipelineWorkFinished().AddUObject(this, &UMoviePipelineNativeHostExecutor::CallbackOnMoviePipelineWorkFinished);
     FCoreDelegates::OnEnginePreExit.AddUObject(this, &UMoviePipelineNativeHostExecutor::CallbackOnEnginePreExit);
+
+    FApp::SetUseFixedTimeStep(true);
+    FApp::SetFixedDeltaTime(RenderFrameRate.AsInterval());
+
+
+    WaitShaderCompilingComplete();
+
+    PollTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateUObject(this, &UMoviePipelineNativeHostExecutor::PollReady),
+        PollIntervalSec
+    );
+
 }
 
 bool UMoviePipelineNativeHostExecutor::IsRendering_Implementation() const
 {
     return bRendering || bWaiting;
-}
-
-void UMoviePipelineNativeHostExecutor::OnExecutorFinishedImpl()
-{
-	UE_LOG(LogTemp, Log, TEXT("%s OnExecutorFinishedImpl"), UTF8_TO_TCHAR(__FUNCTION__));
-	bRendering = false;
-    Super::OnExecutorFinishedImpl();
 }
 
 void UMoviePipelineNativeHostExecutor::RequestForJobInfo(const FString& JobId)
@@ -123,35 +161,34 @@ void UMoviePipelineNativeHostExecutor::CallbackOnEnginePreExit()
 bool UMoviePipelineNativeHostExecutor::PollReady(float DeltaTime)
 {
     if (!bWaiting || !PendingQueue)
-        return false; // 停止 Ticker
+        return false; // Stop Ticker
 
     const double Elapsed = FPlatformTime::Seconds() - StartSeconds;
     UE_LOG(LogTemp, Warning, TEXT("[MRQ] %s Poll for rendering, Elapsed: %.0f s; TimeoutSec: %.0f s"), UTF8_TO_TCHAR(__FUNCTION__), Elapsed, TimeoutSec);
     bool bCanStart = false;
 
-    // 1) 找世界（-game 形态）
+    // 1) Find world（-game）
     UWorld* World = FindGameWorld();
     if (World)
     {
         UE_LOG(LogTemp, Log, TEXT("[MRQ] GameWorld: %s"), *World->GetName());
 
-        // 2) 检查关卡是否 BeginPlay
+        // 2) Check the level: BeginPlay
         if (!World->HasBegunPlay())
         {
-        	UE_LOG(LogTemp, Log, TEXT("[MRQ] Gameworld: %s has not begun play yet."), *World->GetName());
-			return true; // 继续轮询
+        	UE_LOG(LogTemp, Log, TEXT("[MRQ] Game world: %s has not begun play yet."), *World->GetName());
+			return true; // Keep Poll
         }
 
-    	// 3) 等待数据同步、关卡生成等
+    	// 3) Waiting for data sync, level generation.
     	if (URenderGateWorldSubsystem* Gate = World->GetSubsystem<URenderGateWorldSubsystem>())
     	{
     		if (Gate->IsReady())
     		{
-    			bCanStart = true; // 条件已满足
+    			bCanStart = true;
     		}
     		else
     		{
-    			// 闸门对象变化 → 解绑旧回调再绑定新回调
     			if (Gate != BoundGate.Get())
     			{
     				if (BoundGate.IsValid() && OnReadyHandle.IsValid())
@@ -173,7 +210,7 @@ bool UMoviePipelineNativeHostExecutor::PollReady(float DeltaTime)
     	}
     }
 	
-    // —— 统一的超时处理出口 ——
+    // —— Unified timeout processing exit ——
     if (bCanStart || Elapsed >= TimeoutSec)
     {
         if (!bCanStart)
@@ -182,11 +219,11 @@ bool UMoviePipelineNativeHostExecutor::PollReady(float DeltaTime)
         }
 
         StartRenderNow();
-        return false; // 停止 Ticker
+        return false; // Stop Ticker
     }
 
-    UE_LOG(LogTemp, Log, TEXT("[MRQ] 检查 Level 内容是否就绪，等待中... %.0f s; 超过阈值 %.0f s 将自动进入视频渲染流程."), Elapsed, TimeoutSec);
-    return true; // 继续轮询
+    UE_LOG(LogTemp, Log, TEXT("[MRQ] Check if the Level content is ready, waiting... %.0f s; Exceeding the threshold %.0f s will automatically enter the video rendering process."), Elapsed, TimeoutSec);
+    return true; // Continue polling
 }
 
 void UMoviePipelineNativeHostExecutor::StartRenderNow()
@@ -197,19 +234,19 @@ void UMoviePipelineNativeHostExecutor::StartRenderNow()
     bWaiting = false;
     bRendering = true;
 
-	ProgressTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-		FTickerDelegate::CreateUObject(this, &UMoviePipelineNativeHostExecutor::UpdateProgress),
-		0.1f
-	);
-
     DeferredMoviePipeline->Initialize(PendingJob);
+
+    ProgressTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateUObject(this, &UMoviePipelineNativeHostExecutor::UpdateProgress),
+        0.1f
+    );
 }
 
 bool UMoviePipelineNativeHostExecutor::UpdateProgress(float DeltaTime)
 {
     /**
-	 * return false 停止 Ticker
-	 * return true  继续 Ticker
+	 * return false Stop Ticker
+	 * return true  Continue Ticker
      */
 
     if (!PendingQueue)
@@ -221,9 +258,9 @@ bool UMoviePipelineNativeHostExecutor::UpdateProgress(float DeltaTime)
 	UMoviePipelineBlueprintLibrary::GetOverallOutputFrames(Cast<UMoviePipeline>(DeferredMoviePipeline), CurrentFrameIndex, TotalFrames);
 	
     float CompletionPercentage = FMath::Clamp(CurrentFrameIndex / (float)TotalFrames, 0.f, 1.f);
-	UE_LOG(LogTemp, Log, TEXT("[MRQ] 渲染进度: %.1f%%"), CompletionPercentage * 100.f);
+	UE_LOG(LogTemp, Log, TEXT("[MRQ] Rendering Progress: %.1f%%"), CompletionPercentage * 100.f);
 
-    SendProgressUpdate(CurrentJobId, CurrentFrameIndex, TotalFrames);
+    SendProgressUpdate(CurrentJobId, CompletionPercentage);
 
     if (FMath::IsNearlyEqual(CompletionPercentage, 1.0), 0.01)
     {
@@ -240,7 +277,7 @@ bool UMoviePipelineNativeHostExecutor::UpdateProgress(float DeltaTime)
     return true;
 }
 
-void UMoviePipelineNativeHostExecutor::SendProgressUpdate(const FString& JobId, int32 CurrentFrame, int32 TotalFrames)
+void UMoviePipelineNativeHostExecutor::SendProgressUpdate(const FString& JobId, float Progress)
 {
     FHttpModule* Http = &FHttpModule::Get();
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = Http->CreateRequest();
@@ -250,18 +287,24 @@ void UMoviePipelineNativeHostExecutor::SendProgressUpdate(const FString& JobId, 
 	    // Handle the response here
     });
 
-    Request->SetURL(FString::Printf(TEXT("http:://127.0.0.1:8080/ue-notifications/job/%s/progress"), *JobId));
+    Request->SetURL(FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/progress"), *JobId));
 	Request->SetVerb(TEXT("POST"));
     Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 
     TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
-    JsonObject->SetNumberField("current_frame", CurrentFrame);
-    JsonObject->SetNumberField("total_frames", TotalFrames);
 
-    float CompletionPercentage = FMath::Clamp(CurrentFrame / (float)TotalFrames, 0.f, 1.f);
-    JsonObject->SetNumberField("progress_percent", CompletionPercentage);
+    JsonObject->SetNumberField("progress_percent", Progress);
     JsonObject->SetStringField("status", "rendering");
-    JsonObject->SetStringField("stage", "rendering");
+
+    FTimespan OutEstimate;
+    if (UMoviePipelineBlueprintLibrary::GetEstimatedTimeRemaining(DeferredMoviePipeline, OutEstimate))
+    {
+        JsonObject->SetNumberField("progress_eta_seconds", OutEstimate.GetSeconds());
+    }
+    else
+    {
+        JsonObject->SetNumberField("progress_eta_seconds", -1);
+    }
 
     FString JsonStr;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonStr);
@@ -291,6 +334,15 @@ void UMoviePipelineNativeHostExecutor::CallbackOnMoviePipelineWorkFinished(FMovi
 		FTSTicker::GetCoreTicker().RemoveTicker(ProgressTickerHandle);
 		ProgressTickerHandle.Reset();
 	}
+
+    OnExecutorFinishedImpl();
+}
+
+void UMoviePipelineNativeHostExecutor::OnExecutorFinishedImpl()
+{
+    UE_LOG(LogTemp, Log, TEXT("%s OnExecutorFinishedImpl"), UTF8_TO_TCHAR(__FUNCTION__));
+    bRendering = false;
+    Super::OnExecutorFinishedImpl();
 }
 
 void UMoviePipelineNativeHostExecutor::SendHttpOnMoviePipelineWorkFinished(
@@ -298,13 +350,14 @@ void UMoviePipelineNativeHostExecutor::SendHttpOnMoviePipelineWorkFinished(
 {
 	bool bSuccess = MoviePipelineOutputData.bSuccess;
 
-	const FString InURL = FString::Printf(TEXT("http:://127.0.0.1:8080/ue-notifications/job/%s/render-complete"), *CurrentJobId);
+	const FString InURL = FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/render-complete"), *CurrentJobId);
 	const FString InVerb = TEXT("POST");
 	FString InMessage;
 	FJsonObjectWrapper JsonObjectWrapper;
 	JsonObjectWrapper.JsonObject.Get()->SetBoolField(TEXT("movie_pipeline_success"), bSuccess);
 
-	JsonObjectWrapper.JsonObject.Get()->SetStringField(TEXT("video_path"), MRQ_OutputSetting->OutputDirectory.Path);
+    FString VideoOutputDir = (FPaths::IsRelative(MRQ_OutputSetting->OutputDirectory.Path)) ? FPaths::ConvertRelativePathToFull(MRQ_OutputSetting->OutputDirectory.Path) : MRQ_OutputSetting->OutputDirectory.Path;
+	JsonObjectWrapper.JsonObject.Get()->SetStringField(TEXT("video_directory"), VideoOutputDir);
 	JsonObjectWrapper.JsonObjectToString(InMessage);
 
 	TMap<FString, FString> InHeaders;
@@ -312,6 +365,25 @@ void UMoviePipelineNativeHostExecutor::SendHttpOnMoviePipelineWorkFinished(
 	int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
 
 	OnExecutorFinishedImpl();
+}
+
+void UMoviePipelineNativeHostExecutor::WaitShaderCompilingComplete()
+{
+    if (GShaderCompilingManager)
+    {
+	    while (GShaderCompilingManager->IsCompiling())
+	    {
+            GShaderCompilingManager->ProcessAsyncResults(false, false);
+            FPlatformProcess::Sleep(0.5f);
+            GLog->Flush();
+
+            UE_LOG(LogTemp, Warning, TEXT("%s: Wait shader compile complete..."), UTF8_TO_TCHAR(__FUNCTION__));
+	    }
+
+        GShaderCompilingManager->ProcessAsyncResults(false, false);
+        GShaderCompilingManager->FinishAllCompilation();
+        UE_LOG(LogTemp, Warning, TEXT("%s: GShaderCompilingManager->FinishAllCompilation"), UTF8_TO_TCHAR(__FUNCTION__));
+    }
 }
 
 UWorld* UMoviePipelineNativeHostExecutor::FindGameWorld() const

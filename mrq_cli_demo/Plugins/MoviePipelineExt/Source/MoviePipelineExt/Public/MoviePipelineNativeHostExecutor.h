@@ -9,6 +9,8 @@ class URenderGateWorldSubsystem;
 class UMoviePipelineBase;
 class UMoviePipelineOutputSetting;
 class UMoviePipelineCommandLineEncoder;
+class UMoviePipelineGameOverrideSetting;
+
 /**
  * 
  */
@@ -44,13 +46,15 @@ private:
 
 	bool UpdateProgress(float DeltaTime);
 
-	void SendProgressUpdate(const FString& JobId, int32 CurrentFrame, int32 TotalFrames);
+	void SendProgressUpdate(const FString& JobId, float Progress);
 
 	void CallbackOnExecutorFinished(UMoviePipelineExecutorBase* PipelineExecutor, bool bSuccess);
 
 	void CallbackOnMoviePipelineWorkFinished(FMoviePipelineOutputData MoviePipelineOutputData);
 
 	void SendHttpOnMoviePipelineWorkFinished(const FMoviePipelineOutputData& MoviePipelineOutputData);
+
+	void WaitShaderCompilingComplete();
 
 private:
 	UPROPERTY()
@@ -68,8 +72,14 @@ private:
 	UPROPERTY()
 	UMoviePipelineCommandLineEncoder* MRQ_CommandLineEncoder = nullptr;
 
+	UPROPERTY()
+	UMoviePipelineGameOverrideSetting* MRQ_GameOverrideSetting = nullptr;
+
+
 	// {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EPIC": 3}
 	int32 MovieQuality = 1;
+
+	FFrameRate RenderFrameRate = FFrameRate(30, 1);
 	
 	FString MovieFormat;
 	FString CurrentJobId;
@@ -79,7 +89,7 @@ private:
 	bool bWaiting = false;
 	bool bRendering = false;
 
-	float TimeoutSec = 120.f; // 等待场景数据同步
+	float TimeoutSec = 120.f; // Waiting for scene data synchronization
 	float PollIntervalSec = 1.f;
 
 	double StartSeconds = 0.0;
