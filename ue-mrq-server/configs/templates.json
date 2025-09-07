@@ -1,12 +1,13 @@
 {
   "templates": [
     {
-      "template_id": "",
+      "template_id": "Seq1",
+      "level_path": "Seq1",
       "template_name": "",
       "template_desc": "",
-      "map_name": "",
-      "map_path":"",
-      "level_sequence": "",
+      "map_name": "Map0",
+      "map_path":"/Game/Maps/Map0.Map0",
+      "level_sequence": "/Game/Seqs/Seq1.Seq1",
       "params": {}
     }
   ]

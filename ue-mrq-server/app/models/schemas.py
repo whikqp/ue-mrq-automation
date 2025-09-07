@@ -4,6 +4,7 @@ from .status import JobStatus
 
 class CreateJobRequest(BaseModel):
     template_id: str
+    params: Dict[str, Any]
     quality: Literal["LOW","MEDIUM","HIGH","EPIC"] = "HIGH"
     format: Literal["mp4","mov"] = "mp4"
     session_id: Optional[str] = None

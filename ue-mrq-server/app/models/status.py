@@ -16,7 +16,6 @@ RUNNING_STATUSES = {
     JobStatus.starting.value,
     JobStatus.rendering.value,
     JobStatus.encoding.value,
-    JobStatus.uploading.value,
 }
 
 TERMINAL_STATUSES = {

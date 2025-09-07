@@ -46,7 +46,8 @@ def build_ue_cmd(
         [
             f"-JobId={job_id}",
             "-RenderOffscreen", "-Unattended", "-NOSPLASH", "-NoLoadingScreen", "-notexturestreaming",
-            "-stdout", f"-ABSLOG={str(log_path)}"
+            "-stdout", 
+            f"ABSLOG={log_path}"
         ]
     )
 

@@ -4,10 +4,10 @@ from pathlib import Path
 
 class Settings(BaseSettings):
     # Unreal & tools
-    UE_ROOT: str = Field(..., description="UE 安装根目录")
-    UPROJECT: str = Field(..., description="uproject 绝对路径")
-    FFMPEG: str = Field("ffmpeg", description="ffmpeg 可执行路径")
-    EXECUTOR_CLASS: str = Field("MoviePipelineNativeHostExecutor", description="Movie Pipeline 执行器类")
+    UE_ROOT: str = Field(..., description="UE install root directory")
+    UPROJECT: str = Field(..., description="uproject absolute path")
+    FFMPEG: str = Field("ffmpeg", description="ffmpeg executable path")
+    EXECUTOR_CLASS: str = Field("MoviePipelineNativeHostExecutor", description="Movie Pipeline Executor reference path")
 
     # Paths
     DATA_ROOT: Path = Field(default=Path("./data"))

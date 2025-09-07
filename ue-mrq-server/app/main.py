@@ -7,6 +7,7 @@ from .templates.loader import TemplateRegistry
 from .scheduler.scheduler import Scheduler
 from contextlib import asynccontextmanager
 from .api import ue_notifications
+from .middleware.error_handlers import *
 
 Base.metadata.create_all(bind=engine)
 
@@ -30,8 +31,11 @@ async def custom_lifespan(app: FastAPI):
     if scheduler:
         scheduler.stop()
 
-app = FastAPI(title="UE MRQ Server", lifespan=custom_lifespan
-              )
+app = FastAPI(title="UE MRQ Server", lifespan=custom_lifespan)
+
+# Register minimal global error handlers
+register_error_handlers(app)
+
 app.include_router(templates_api.router)
 app.include_router(jobs_api.router)
 app.include_router(ue_notifications.router)

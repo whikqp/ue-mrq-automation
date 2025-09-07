@@ -4,6 +4,7 @@ from typing import Optional, Union
 from fastapi import APIRouter, HTTPException, Depends, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from app.storage.oss_adapter import *
 from ..db.database import session_scope
 from ..db.models import Job
 from ..models.schemas import CreateJobRequest, JobResponse, Progress, CancelResponse, UEJobResponse, JobNoParamsResponse, JobParamsResponse
@@ -31,7 +32,8 @@ async def create_job(req: CreateJobRequest, registry: TemplateRegistry = Depends
         job = Job(job_id=job_id, session_id=req.session_id, template_id=req.template_id, payload=payload)
         db.add(job)
         db.commit()
-        # 计算队列位置
+
+        # Calculate queue position
         pos = db.execute(select(Job).where(Job.status==JobStatus.queued.value).order_by(Job.created_at.asc())).scalars().all()
         queue_pos = next((i for i, j in enumerate(pos) if j.job_id == job_id), len(pos)) + 1
     return {"session_id": req.session_id, "job_id": job_id, "status": JobStatus.queued.value, "queue_position": queue_pos, "template_id": req.template_id}
@@ -43,7 +45,7 @@ async def get_job(job_id: str, x_client: Optional[str] = Header(default=None)):
         if not job:
             raise HTTPException(status_code=404, detail={"code":"JOB_NOT_FOUND"})
         
-        progress = Progress(percent=job.progress_percent)
+        progress = Progress(percent=job.progress_percent, eta_seconds=job.progress_eta_seconds)
         artifacts = None
         if job.artifacts:
             artifacts = {"video_url": job.artifacts.video_url}
@@ -80,7 +82,7 @@ async def get_job_progress(job_id: str):
         if not job:
             raise HTTPException(status_code=404, detail={"code": "JOB_NOT_FOUND"})
         
-        progress = Progress(percent=job.progress_percent)
+        progress = Progress(percent=job.progress_percent, eta_seconds=job.progress_eta_seconds)
         artifacts = None
         if job.artifacts:
             artifacts = {"video_url": job.artifacts.video_url}

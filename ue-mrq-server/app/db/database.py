@@ -10,7 +10,6 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 class Base(DeclarativeBase):
     pass
 
-# 工具：FastAPI 依赖
 from contextlib import contextmanager
 from typing import Iterator
 

@@ -16,7 +16,7 @@ import requests
 import time
 from ..db.models import Job, JobArtifact
 from ..models.status import JobStatus
-from ..utils.procs import popen
+from ..utils.procs import popen, subprocess
 from ..config import settings
 from .ue_command import build_ue_cmd
 from .ffmpeg import make_concat_file, run_ffmpeg_concat
@@ -35,7 +35,7 @@ class RunnerContext:
 
 
 def run_job(db: Session, job: Job, template: dict) -> None:
-    # 初始化路径
+    # Init work dirs
     work = Path(settings.DATA_ROOT) / "jobs" / job.job_id
     frames = work / "frames"
     logs = work / "logs"
@@ -54,7 +54,6 @@ def run_job(db: Session, job: Job, template: dict) -> None:
         out_mp4=work / f"{job.job_id}.mp4",
     )
 
-    # UE 渲染
     job.status = JobStatus.starting.value
     job.started_at = datetime.now(CN_TZ)
     db.commit()
@@ -80,15 +79,23 @@ def run_job(db: Session, job: Job, template: dict) -> None:
         movie_quality=str(quality_num),
         movie_format=movie_fmt
     )
-    print("ue_cmd content: " + str(ue_cmd))
+
+    debug_cmd_str = subprocess.list2cmdline(ue_cmd)
+    print("ue_cmd.exe content: " + debug_cmd_str)
+
+    print(f"ue_cmd.exe log path: {ue_log_absolute}")
 
     proc = popen(ue_cmd, log_path=ue_log_absolute)
+
+    if (proc.pid is None) or (not psutil.pid_exists(proc.pid)):
+        job.status = JobStatus.failed.value
+        db.commit()
+        return 
+    
     job.pid = proc.pid
-    job.status = JobStatus.rendering.value
     db.commit()
 
-    # 通过 HTTP 监听渲染进度
-
+   
     render_completed = False
     max_wait_time = 300
     wait_start = time.time()
@@ -96,26 +103,46 @@ def run_job(db: Session, job: Job, template: dict) -> None:
     
     while not render_completed and (time.time() - wait_start) < max_wait_time:
         rc = proc.poll()
+
         if rc is None:
             print(f"Process {proc.pid} is still running...")
         else:
             print(f"Process {proc.pid} return with code {rc}.")
             if rc == 0:
-                
-                job.progress_percent = 100.0
-                job.status = JobStatus.completed.value
                 job.ended_at = datetime.now(CN_TZ)
                 db.commit()
 
                 render_completed = True
             else:
+                # Non-zero exit: print UE log tail from last 'error' line to end
+                try:
+                    lines = Path(ue_log_absolute).read_text(encoding='utf-8', errors='ignore').splitlines()
+                    if lines:
+                        start_idx = max(0, len(lines) - 200)
+                        for i in range(len(lines) - 1, -1, -1):
+                            if 'error' in lines[i].lower():
+                                start_idx = i
+                                break
+                        tail = "\n".join(lines[start_idx:])
+                        print("---- UE log tail ----")
+                        print(tail)
+                        print("---- UE log tail ----")
+                        print(f"More error info: {ue_log_absolute}")
+                except Exception as e:
+                    print(f"Read UE log failed: {e}")
                 job.status = JobStatus.failed.value
                 db.commit()
                 return
             break
 
-    db.refresh(job)
-    if job.status_enum in [JobStatus.completed]:
-        render_completed = True
+        db.refresh(job)
+        if job.status_enum in [JobStatus.completed, JobStatus.encoding, JobStatus.uploading]:
+            render_completed = True
 
-    time.sleep(5)
+        time.sleep(5)
+
+    if not render_completed:
+        job.status = JobStatus.failed.value
+        job.ended_at = datetime.now(CN_TZ)
+        db.commit()
+        return

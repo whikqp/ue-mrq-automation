@@ -6,12 +6,13 @@ from ..models.status import JobStatus
 from datetime import datetime
 from ..utils.time import now_cn
 import json
+from ..utils.misc import *
 
 router = APIRouter(prefix="/ue-notifications", tags=["ue-notifications"])
 
 @router.post("/job/{job_id}/progress")
 async def update_job_progress(job_id: str, request: Request):
-    """接收UE5推送的渲染进度更新"""
+    """Receive progress updates pushed from UE5"""
     data = await request.json()
 
     with session_scope() as db:
@@ -19,9 +20,11 @@ async def update_job_progress(job_id: str, request: Request):
         if not job:
             return {"error": "Job not found"}
         
-        # 更新进度信息 
+        # update progress and status 
         job.progress_percent = data.get("progress_percent", job.progress_percent)
+        job.progress_eta_seconds = data.get("progress_eta_seconds", job.progress_eta_seconds)
         status_str = data.get("status")
+
         if status_str is not None:
             try:
                 job.status = JobStatus(status_str).value
@@ -36,7 +39,7 @@ async def update_job_progress(job_id: str, request: Request):
 
 @router.post("/job/{job_id}/render-complete")
 async def render_complete(job_id: str, request: Request):
-    """接收UE5推送的渲染完成通知"""
+    """Receive notification from UE5 that rendering is complete"""
     data = await request.json()
     print(f"Received data from UE5: {data}")
 
@@ -53,8 +56,15 @@ async def render_complete(job_id: str, request: Request):
             job.artifacts = JobArtifact(job_id=job.job_id)
             created_artifact = True
         
-        if "video_path" in data:
-            job.artifacts.video_path = data["video_path"]
+        if "video_directory" in data:
+            video_dir = data["video_directory"]
+            video_file = find_video_file(video_dir)
+
+            if video_file is None:
+                print(f"No video file found in directory: {video_dir}")
+            
+            job.artifacts.video_path = video_file
+
 
         if created_artifact:
             db.add(job.artifacts)
@@ -66,7 +76,7 @@ async def render_complete(job_id: str, request: Request):
 
 @router.post("/job/{job_id}/encoding-status")
 async def encoding_status(job_id: str, request: Request):
-    """接收UE5推送的视频编码状态更新""" 
+    """Receive encoding status updates from UE5""" 
     data = await request.json()
 
     with session_scope() as db: 

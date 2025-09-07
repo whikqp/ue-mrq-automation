@@ -34,12 +34,12 @@ class Scheduler:
             try:
                 self._tick()
             except Exception as e:
-                # TODO: 记录日志
+                # TODO: add logging
                 pass
             self._stop.wait(settings.SCHEDULER_POLL_MS / 1000)
 
     def _tick(self):
-        # 并发/显存检查
+        # check GPU memory
         gpu = query_gpu0()
         if gpu and gpu.free_mb < settings.MIN_FREE_VRAM_MB:
             print(f"GPU memory is low: {gpu.free_mb}MB free")
@@ -47,7 +47,9 @@ class Scheduler:
         with session_scope() as db:
             running = db.execute(select(Job).where(Job.status.in_(list(RUNNING_STATUSES))) ).scalars().all()
             if len(running) >= settings.MAX_CONCURRENCY:
-                print(f"Max concurrency reached. Current running jobs {running} MAX_CONCURRENCY={settings.MAX_CONCURRENCY}")
+                num_running = len(running)
+                num_max = settings.MAX_CONCURRENCY
+                print(f"Max concurrency reached. Current running jobs {num_running} MAX_CONCURRENCY={num_max}")
                 return
             
             job = db.execute(select(Job).where(Job.status==JobStatus.queued.value).order_by(Job.created_at.asc())).scalars().first()
@@ -56,5 +58,6 @@ class Scheduler:
             template = self.registry.get(job.template_id)
             if not template:
                 job.status = JobStatus.failed.value; db.commit(); return
-            # 在当前线程执行（MVP）；生产可改多进程/任务队列
+            
+            # TODO: implement multi-process/task queue
             run_job(db, job, template)

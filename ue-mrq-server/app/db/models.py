@@ -14,9 +14,10 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(24), default=JobStatus.queued.value)
     
 
-    payload: Mapped[str] = mapped_column(Text)  # JSON 字符串
+    payload: Mapped[str] = mapped_column(Text)  # JSON string
 
     progress_percent: Mapped[float] = mapped_column(Float, default=0.0)
+    progress_eta_seconds: Mapped[int | None] = mapped_column(Integer, default=None)
 
     pid: Mapped[int | None] = mapped_column(Integer)
 
