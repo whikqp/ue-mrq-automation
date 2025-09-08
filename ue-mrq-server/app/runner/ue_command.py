@@ -15,6 +15,7 @@ def build_ue_cmd(
     movie_quality: str | None = "MEDIUM",
     movie_format: str | None = "mp4",
     movie_pipeline_config: str | None = None,
+    game_mode_class: str | None = None,
     ) -> list[str]:
     
     final_cmd_list = [
@@ -22,11 +23,17 @@ def build_ue_cmd(
         settings.UPROJECT,
     ]
 
-    if map_name is not None:
-        final_cmd_list.append(map_name)
+    # Choose either map_path (preferred) or map_name and append optional game mode
+    map_url: str | None = None
+    if map_path:
+        map_url = map_path
+    elif map_name:
+        map_url = map_name
 
-    if map_path is not None:
-        final_cmd_list.append(map_path)
+    if map_url is not None:
+        if game_mode_class:
+            map_url = f"{map_url}?game={game_mode_class}"
+        final_cmd_list.append(map_url)
 
     final_cmd_list.append("-game")
 

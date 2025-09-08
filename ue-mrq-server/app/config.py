@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     UPROJECT: str = Field(..., description="uproject absolute path")
     FFMPEG: str = Field("ffmpeg", description="ffmpeg executable path")
     EXECUTOR_CLASS: str = Field("MoviePipelineNativeHostExecutor", description="Movie Pipeline Executor reference path")
+    GAME_MODE_CLASS: str = Field("Map gamemode", description="Movie render pipeline job game mode")
 
     # Paths
     DATA_ROOT: Path = Field(default=Path("./data"))
