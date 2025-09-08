@@ -1,21 +1,42 @@
-# UE MRQ Cloud (MVP)
+UE MRQ Server
 
-```bash
-# 1) 环境（Anaconda 推荐 3.10）
+FastAPI service to trigger Unreal Engine Movie Render Queue (MRQ) jobs and manage results.
+
+Prerequisites
+- Python 3.10+
+- Unreal Engine installed (path required in config)
+- FFmpeg installed (path required in config)
+
+Setup
+```
+# Create and activate a virtual environment (Conda example)
 conda create -n ue-mrq python=3.10 -y
 conda activate ue-mrq
+
+# Install dependencies
 pip install -r requirements.txt
+```
 
-# 2) 配置环境变量（或 .env）
-set UE_ROOT=D:\\Install\\UE_5.4
-set UPROJECT=D:\\Dev\\r0\\r0.uproject
-set FFMPEG=D:\\Install\\ffmpeg\\bin\\ffmpeg.exe
+Configuration
+- Edit configuration in the `.env` file at the repository root. This is the recommended way to configure the service.
+- Key settings include (examples only):
+  - UE_ROOT=D:/InstallVersion_UE/UE_5.4
+  - UPROJECT=D:/Path/To/YourProject/YourProject.uproject
+  - FFMPEG=D:/Install/ffmpeg/bin/ffmpeg.exe
+  - EXECUTOR_CLASS=/Script/MoviePipelineExt.MoviePipelineNativeHostExecutor
+  - GAME_MODE_CLASS=/Script/MovieRenderPipelineCore.MoviePipelineGameMode
+  - DATA_ROOT=./data
+  - LOG_ROOT=./data/logs
 
-# 3) 运行
-uvicorn app.main:app --reload --port 8080
+Note: Environment variables with the same names will override `.env` values. Prefer setting values in `.env` unless you intentionally override via OS env.
 
-# API
-GET  /templates
-POST /jobs
-GET  /jobs/{id}
-POST /jobs/{id}/cancel
+Run
+```
+python run.py
+```
+The server listens on `127.0.0.1:8080` by default.
+
+API
+- Open interactive API docs at: http://127.0.0.1:8080/docs
+- Use the docs to explore and test endpoints (e.g., templates listing and job submission).
+
