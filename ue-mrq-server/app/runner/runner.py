@@ -77,7 +77,8 @@ def run_job(db: Session, job: Job, template: dict) -> None:
         job_id=job.job_id,
         log_path=ue_log_absolute,
         movie_quality=str(quality_num),
-        movie_format=movie_fmt
+        movie_format=movie_fmt,
+        game_mode_class=settings.GAME_MODE_CLASS
     )
 
     debug_cmd_str = subprocess.list2cmdline(ue_cmd)
@@ -86,6 +87,26 @@ def run_job(db: Session, job: Job, template: dict) -> None:
     print(f"ue_cmd.exe log path: {ue_log_absolute}")
 
     proc = popen(ue_cmd, log_path=ue_log_absolute)
+    
+    # Helper: print UE log tail for diagnostics (success or failure)
+    def _print_ue_log_tail(from_error: bool = False) -> None:
+        try:
+            lines = Path(ue_log_absolute).read_text(encoding='utf-8', errors='ignore').splitlines()
+            if not lines:
+                return
+            start_idx = max(0, len(lines) - 200)
+            if from_error:
+                for i in range(len(lines) - 1, -1, -1):
+                    if 'error' in lines[i].lower():
+                        start_idx = i
+                        break
+            tail = "\n".join(lines[start_idx:])
+            print("---- UE log tail ----")
+            print(tail)
+            print("---- UE log tail ----")
+            print(f"More details: {ue_log_absolute}")
+        except Exception as e:
+            print(f"Read UE log failed: {e}")
 
     if (proc.pid is None) or (not psutil.pid_exists(proc.pid)):
         job.status = JobStatus.failed.value
@@ -97,6 +118,7 @@ def run_job(db: Session, job: Job, template: dict) -> None:
 
    
     render_completed = False
+    printed_rc = False
     max_wait_time = 300
     wait_start = time.time()
 
@@ -108,28 +130,25 @@ def run_job(db: Session, job: Job, template: dict) -> None:
             print(f"Process {proc.pid} is still running...")
         else:
             print(f"Process {proc.pid} return with code {rc}.")
+            printed_rc = True
             if rc == 0:
                 job.ended_at = datetime.now(CN_TZ)
                 db.commit()
-
-                render_completed = True
-            else:
-                # Non-zero exit: print UE log tail from last 'error' line to end
+                # On normal exit, also print a short log tail for visibility
+                # Limit to last ~50 lines to avoid overwhelming the console
                 try:
                     lines = Path(ue_log_absolute).read_text(encoding='utf-8', errors='ignore').splitlines()
                     if lines:
-                        start_idx = max(0, len(lines) - 200)
-                        for i in range(len(lines) - 1, -1, -1):
-                            if 'error' in lines[i].lower():
-                                start_idx = i
-                                break
-                        tail = "\n".join(lines[start_idx:])
-                        print("---- UE log tail ----")
+                        tail = "\n".join(lines[-5:])
+                        print("---- UE log tail (last 5) ----")
                         print(tail)
-                        print("---- UE log tail ----")
-                        print(f"More error info: {ue_log_absolute}")
+                        print("---- UE log tail (last 5) ----")
                 except Exception as e:
                     print(f"Read UE log failed: {e}")
+                render_completed = True
+            else:
+                # Non-zero exit: print UE log tail from last 'error' line to end
+                _print_ue_log_tail(from_error=True)
                 job.status = JobStatus.failed.value
                 db.commit()
                 return
@@ -140,6 +159,17 @@ def run_job(db: Session, job: Job, template: dict) -> None:
             render_completed = True
 
         time.sleep(5)
+
+    # If loop exited due to status changes (not rc), ensure we still report rc
+    if not printed_rc:
+        rc_final = proc.poll()
+        if rc_final is None:
+            try:
+                rc_final = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                rc_final = None
+        if rc_final is not None:
+            print(f"Process {proc.pid} return with code {rc_final}.")
 
     if not render_completed:
         job.status = JobStatus.failed.value
