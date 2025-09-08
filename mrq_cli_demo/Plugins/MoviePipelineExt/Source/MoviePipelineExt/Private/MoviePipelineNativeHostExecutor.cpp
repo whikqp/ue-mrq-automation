@@ -51,10 +51,42 @@ void UMoviePipelineNativeHostExecutor::InitFromCommandLineParams()
 
 }
 
+void UMoviePipelineNativeHostExecutor::CheckGameModeOverrides()
+{
+    UWorld* World = FindGameWorld();
+    if (!World)
+    {
+        UE_LOG(LogTemp, Error, TEXT("%s: Cannot find game world!"), ANSI_TO_TCHAR(__FUNCTION__));
+    }
+
+    AGameModeBase* AuthGameMode = World->GetAuthGameMode();
+    if (AuthGameMode->GetClass() == AGameModeBase::StaticClass())
+    {
+        UE_LOG(LogTemp, Log, TEXT("%s: The current map does not specify a custom GameMode, we manually call the SetCinematicMode function."), ANSI_TO_TCHAR(__FUNCTION__));
+
+        APlayerController* PlayerController = UGameplayStatics::GetPlayerController(World, 0);
+        if (PlayerController)
+        {
+            const bool bCinematicMode = true;
+            const bool bHidePlayer = true;
+            const bool bHideHUD = true;
+            const bool bPreventMovement = true;
+            const bool bPreventTurning = true;
+            PlayerController->SetCinematicMode(bCinematicMode, bHidePlayer, bHideHUD, bPreventMovement, bPreventTurning);
+        }
+    }
+    else if (AuthGameMode->GetClass()->IsChildOf(AGameModeBase::StaticClass()))
+    {
+        UE_LOG(LogTemp, Log, TEXT("%s: The current map specify a custom GameMode: %s."), ANSI_TO_TCHAR(__FUNCTION__), *AuthGameMode->GetClass()->GetName());
+    }
+}
+
 void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueue* InPipelineQueue)
 {
 
 	InitFromCommandLineParams();
+
+    CheckGameModeOverrides();
 
 	UWorld* World = FindGameWorld();
 
@@ -380,7 +412,7 @@ void UMoviePipelineNativeHostExecutor::WaitShaderCompilingComplete()
             UE_LOG(LogTemp, Warning, TEXT("%s: Wait shader compile complete..."), UTF8_TO_TCHAR(__FUNCTION__));
 	    }
 
-        GShaderCompilingManager->ProcessAsyncResults(false, false);
+        GShaderCompilingManager->ProcessAsyncResults(false, true);
         GShaderCompilingManager->FinishAllCompilation();
         UE_LOG(LogTemp, Warning, TEXT("%s: GShaderCompilingManager->FinishAllCompilation"), UTF8_TO_TCHAR(__FUNCTION__));
     }

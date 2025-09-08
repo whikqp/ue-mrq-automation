@@ -33,6 +33,8 @@ public:
 private:
 	void InitFromCommandLineParams();
 
+	void CheckGameModeOverrides();
+
 	void RequestForJobInfo(const FString& JobId);
 
 	UFUNCTION()
