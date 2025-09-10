@@ -1,11 +1,41 @@
+
 # UE MRQ Automation
 
+<details>
+  <summary>Read the statement (English / 中文)</summary>
+
+Most of this project was built in collaboration with AI, primarily using tools such as ChatGPT5, OpenAI Codex, Gemini 2.5 Pro, Qwen Code, and Qwen 3. In practice, AI-assisted programming already delivers surprising productivity: in a short time it can take a project from zero to one by assembling the backend and the automated rendering execution pipeline that power the UE5 Movie Render Pipeline (MRQ), then rapidly validate product ideas and support multiple rounds of iteration.
+> 本项目的大部分工作由 AI 协作完成，主要借助 ChatGPT5、OpenAI Codex、Gemini 2.5 Pro、Qwen Code、Qwen 3 等工具。实践表明，AI 辅助编程已具备令人惊讶的生产力：可以在很短时间内从零到一搭建起用于驱动 UE5 Movie Render Pipeline（MRQ）的后端与自动化渲染执行链路，并在此基础上快速验证产品想法、完成多轮迭代。
+
+Experience across multiple projects shows that AI participation in coding does not diminish engineering value. The truly effective approach is "human-orchestrated pipeline + AI-assisted programming": humans handle goal decomposition, boundaries, and quality requirements; AI efficiently completes the implementation and iterates within a feedback loop. This collaboration model lets us invest more energy in architecture and experience while maintaining delivery speed.
+> 从多个项目的实践来看，AI 参与编码并不降低工程价值。真正有效的方式是“人工把握链路 + AI 辅助编程”：人负责目标拆解、边界与质量要求，AI 高效完成实现，并在反馈回路中持续迭代。此协作模式让我们将更多精力投入架构与体验，同时保持交付速度。
+
+Today's AI still struggles to span an entire product pipeline without human oversight, yet it already significantly boosts R&D efficiency and exploration speed. This "human-led + AI-collaborative" development style is both efficient and genuinely interesting. This repository documents the process and outcomes of building the project in that way.
+> 当前的 AI 仍难以在无人干预下贯通完整的产品链路，但已能显著提升研发效率与探索速度。这种“人工主导 + AI 协作”的开发方式既高效，也十分有意思。本仓库记录了采用该方法构建项目的过程与成果。
+
+</details>
+
+***
+
+A simple web service for managing Unreal Engine 5 rendering tasks. You can submit rendering requests through a web interface or other clients, and the system will automatically execute UE5 command-line rendering on a specified machine and return the generated video files.
+
 Backend + Unreal Engine integration for automating Movie Render Pipeline (MRQ) jobs.
+
+## What This Tool Does
+
+  ### Practical Problems Solved
+  - **Avoid manual operations**: No need to open the UE editor every time to set up rendering parameters
+  - **Task queuing**: Multiple rendering tasks are executed in sequence to avoid resource conflicts
+  - **Progress tracking**: See the status and results of each rendering task
+  - **Remote triggering**: Start rendering tasks with simple HTTP requests
+
+  ### Current Limitations
+  - Currently supports only single-machine operation
+  - Limited number of concurrent rendering tasks at the same time (to prevent GPU memory shortages)
 
 This project has two parts:
 - Python backend service that exposes REST APIs to list video templates and create render jobs, schedules work, and tracks results.
 - Unreal Engine side that runs headless rendering via a custom Movie Pipeline Executor, receives job context, and posts progress/results back to the server.
-
 
 ## Overview
 
