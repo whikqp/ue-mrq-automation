@@ -1,7 +1,8 @@
-#include "MoviePipelineNativeHostExecutor.h"
+#include "MoviePipelineNativeDeferredExecutor.h"
 
 #include "JsonObjectWrapper.h"
 #include "MoviePipeline.h"
+#include "MoviePipelineBlueprintLibrary.h"
 #include "RenderGateWorldSubsystem.h"
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineOutputSetting.h"
@@ -11,15 +12,23 @@
 #include "MoviePipelineImageSequenceOutput.h"
 #include "MoviePipelineGameOverrideSetting.h"
 #include "ShaderCompiler.h"
+#include "HAL/IConsoleManager.h"
 
 #define LOCTEXT_NAMESPACE "MoviePipelineExecutorExt"
 
-UMoviePipelineNativeHostExecutor::UMoviePipelineNativeHostExecutor(){}
+UMoviePipelineNativeDeferredExecutor::UMoviePipelineNativeDeferredExecutor()
+{
+    LastPipelineState = EMovieRenderPipelineState::Uninitialized;
+    LastReportedStatus = ERenderJobStatus::queued;
+    bHasSentStartingNotification = false;
+    bHasSentFinalizeNotification = false;
+    bHasSentExportNotification = false;
+}
 
-void UMoviePipelineNativeHostExecutor::InitFromCommandLineParams()
+void UMoviePipelineNativeDeferredExecutor::InitFromCommandLineParams()
 {
     FParse::Value(FCommandLine::Get(), TEXT("-JobId="), CurrentJobId);
-    UE_LOG(LogTemp, Log, TEXT("%s Init CurrentJobId: %s"), UTF8_TO_TCHAR(__FUNCTION__), *CurrentJobId);
+    UE_LOG(LogTemp, Log, TEXT("%s Init CurrentJobId: %s"), ANSI_TO_TCHAR(__FUNCTION__), *CurrentJobId);
 
     FParse::Value(FCommandLine::Get(), TEXT("-LevelSequence="), LevelSequencePath);
 	FParse::Value(FCommandLine::Get(), TEXT("-MovieQuality="), MovieQuality);
@@ -51,7 +60,7 @@ void UMoviePipelineNativeHostExecutor::InitFromCommandLineParams()
 
 }
 
-void UMoviePipelineNativeHostExecutor::CheckGameModeOverrides()
+void UMoviePipelineNativeDeferredExecutor::CheckGameModeOverrides()
 {
     UWorld* World = FindGameWorld();
     if (!World)
@@ -81,7 +90,7 @@ void UMoviePipelineNativeHostExecutor::CheckGameModeOverrides()
     }
 }
 
-void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueue* InPipelineQueue)
+void UMoviePipelineNativeDeferredExecutor::Execute_Implementation(UMoviePipelineQueue* InPipelineQueue)
 {
 
 	InitFromCommandLineParams();
@@ -149,8 +158,8 @@ void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueu
     PendingJob->GetConfiguration()->InitializeTransientSettings();
 
     DeferredMoviePipeline = NewObject<UMoviePipeline>(World, UMoviePipeline::StaticClass());
-    DeferredMoviePipeline->OnMoviePipelineWorkFinished().AddUObject(this, &UMoviePipelineNativeHostExecutor::CallbackOnMoviePipelineWorkFinished);
-    FCoreDelegates::OnEnginePreExit.AddUObject(this, &UMoviePipelineNativeHostExecutor::CallbackOnEnginePreExit);
+    DeferredMoviePipeline->OnMoviePipelineWorkFinished().AddUObject(this, &UMoviePipelineNativeDeferredExecutor::CallbackOnMoviePipelineWorkFinished);
+    FCoreDelegates::OnEnginePreExit.AddUObject(this, &UMoviePipelineNativeDeferredExecutor::CallbackOnEnginePreExit);
 
     FApp::SetUseFixedTimeStep(true);
     FApp::SetFixedDeltaTime(RenderFrameRate.AsInterval());
@@ -159,44 +168,109 @@ void UMoviePipelineNativeHostExecutor::Execute_Implementation(UMoviePipelineQueu
     WaitShaderCompilingComplete();
 
     PollTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateUObject(this, &UMoviePipelineNativeHostExecutor::PollReady),
+        FTickerDelegate::CreateUObject(this, &UMoviePipelineNativeDeferredExecutor::PollReady),
         PollIntervalSec
     );
 
 }
 
-bool UMoviePipelineNativeHostExecutor::IsRendering_Implementation() const
+bool UMoviePipelineNativeDeferredExecutor::IsRendering_Implementation() const
 {
     return bRendering || bWaiting;
 }
 
-void UMoviePipelineNativeHostExecutor::RequestForJobInfo(const FString& JobId)
+template<typename T>
+static FString EnumToString(const T EnumValue)
 {
+	FString Name = StaticEnum<T>()->GetNameStringByValue(static_cast<__underlying_type(T)>(EnumValue));
+	check(Name.Len() != 0);
+	return Name;
 }
 
-void UMoviePipelineNativeHostExecutor::OnReceiveJobInfo(int32 RequestIndex, int32 ResponseCode, const FString& Message)
+void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 {
-}
+	EMovieRenderPipelineState PipelineState = UMoviePipelineBlueprintLibrary::GetPipelineState(DeferredMoviePipeline);
+	FString PipelineStateName = EnumToString<EMovieRenderPipelineState>(PipelineState);
+	UE_LOG(LogTemp, Warning, TEXT("%s MoviePipelineState: %s"), ANSI_TO_TCHAR(__FUNCTION__), *PipelineStateName);
 
-void UMoviePipelineNativeHostExecutor::CallbackOnEnginePreExit()
-{
-	if (DeferredMoviePipeline && DeferredMoviePipeline->GetPipelineState() != EMovieRenderPipelineState::Finished)
+	switch (PipelineState)
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s Application quit while Movie Pipeline was still active. Stalling to do full shutdown."), UTF8_TO_TCHAR(__FUNCTION__));
-		DeferredMoviePipeline->RequestShutdown();
-		DeferredMoviePipeline->Shutdown();
-
-		UE_LOG(LogTemp, Log, TEXT("%s Stalling finished, pipeline has shut down."), UTF8_TO_TCHAR(__FUNCTION__));
+		case EMovieRenderPipelineState::Uninitialized:
+		{
+			if (!bHasSentStartingNotification)
+			{
+				SendStatusNotification(ERenderJobStatus::starting, 0.0f);
+				bHasSentStartingNotification = true;
+			}
+			break;
+		}
+		case EMovieRenderPipelineState::ProducingFrames:
+		{
+			// Throttled progress update to limit HTTP calls.
+			if (DeferredMoviePipeline)
+			{
+				int32 CurrentFrameIndex = 0;
+				int32 TotalFrames = 1;
+				UMoviePipelineBlueprintLibrary::GetOverallOutputFrames(Cast<UMoviePipeline>(DeferredMoviePipeline), CurrentFrameIndex, TotalFrames);
+				const float CompletionPercentage = FMath::Clamp(TotalFrames > 0 ? (CurrentFrameIndex / (float)TotalFrames) : 0.f, 0.f, 1.f);
+				MaybeSendProgressUpdate(CompletionPercentage);
+			}
+			break;	
+		}
+		case EMovieRenderPipelineState::Finalize:
+		{
+			if (!bHasSentFinalizeNotification)
+			{
+				SendStatusNotification(ERenderJobStatus::encoding, 1.0f);
+				bHasSentFinalizeNotification = true;
+			}
+			break;	
+		}
+		case EMovieRenderPipelineState::Export:
+		{
+			if (!bHasSentExportNotification)
+			{
+				SendStatusNotification(ERenderJobStatus::encoding, 1.0f);
+				bHasSentExportNotification = true;
+			}
+			break;	
+		}
+		case EMovieRenderPipelineState::Finished:
+		{
+			break;	
+		}
+		default:
+			break;
 	}
 }
 
-bool UMoviePipelineNativeHostExecutor::PollReady(float DeltaTime)
+void UMoviePipelineNativeDeferredExecutor::RequestForJobInfo(const FString& JobId)
+{
+}
+
+void UMoviePipelineNativeDeferredExecutor::OnReceiveJobInfo(int32 RequestIndex, int32 ResponseCode, const FString& Message)
+{
+}
+
+void UMoviePipelineNativeDeferredExecutor::CallbackOnEnginePreExit()
+{
+	if (DeferredMoviePipeline && DeferredMoviePipeline->GetPipelineState() != EMovieRenderPipelineState::Finished)
+	{
+		UE_LOG(LogTemp, Log, TEXT("%s Application quit while Movie Pipeline was still active. Stalling to do full shutdown."), ANSI_TO_TCHAR(__FUNCTION__));
+		DeferredMoviePipeline->RequestShutdown();
+		DeferredMoviePipeline->Shutdown();
+
+		UE_LOG(LogTemp, Log, TEXT("%s Stalling finished, pipeline has shut down."), ANSI_TO_TCHAR(__FUNCTION__));
+	}
+}
+
+bool UMoviePipelineNativeDeferredExecutor::PollReady(float DeltaTime)
 {
     if (!bWaiting || !PendingQueue)
         return false; // Stop Ticker
 
     const double Elapsed = FPlatformTime::Seconds() - StartSeconds;
-    UE_LOG(LogTemp, Warning, TEXT("[MRQ] %s Poll for rendering, Elapsed: %.0f s; TimeoutSec: %.0f s"), UTF8_TO_TCHAR(__FUNCTION__), Elapsed, TimeoutSec);
+    UE_LOG(LogTemp, Warning, TEXT("[MRQ] %s Poll for rendering, Elapsed: %.0f s; TimeoutSec: %.0f s"), ANSI_TO_TCHAR(__FUNCTION__), Elapsed, TimeoutSec);
     bool bCanStart = false;
 
     // 1) Find world（-game）
@@ -235,7 +309,7 @@ bool UMoviePipelineNativeHostExecutor::PollReady(float DeltaTime)
     			if (!bGateDelegateBound)
     			{
     				OnReadyHandle = Gate->OnReadyEvent()
-						.AddUObject(this, &UMoviePipelineNativeHostExecutor::StartRenderNow);
+						.AddUObject(this, &UMoviePipelineNativeDeferredExecutor::StartRenderNow);
     				bGateDelegateBound = true;
     			}
     		}
@@ -258,7 +332,7 @@ bool UMoviePipelineNativeHostExecutor::PollReady(float DeltaTime)
     return true; // Continue polling
 }
 
-void UMoviePipelineNativeHostExecutor::StartRenderNow()
+void UMoviePipelineNativeDeferredExecutor::StartRenderNow()
 {
     if (!bWaiting || bRendering || !PendingQueue)
         return;
@@ -268,55 +342,25 @@ void UMoviePipelineNativeHostExecutor::StartRenderNow()
 
     DeferredMoviePipeline->Initialize(PendingJob);
 
-    ProgressTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateUObject(this, &UMoviePipelineNativeHostExecutor::UpdateProgress),
-        0.1f
-    );
+    // Progress updates are now handled in OnBeginFrame with throttling.
 }
 
-bool UMoviePipelineNativeHostExecutor::UpdateProgress(float DeltaTime)
-{
-    /**
-	 * return false Stop Ticker
-	 * return true  Continue Ticker
-     */
-
-    if (!PendingQueue)
-        return false;
-
-	int32 CurrentFrameIndex = 0;
-	int32 TotalFrames = 1;
-
-	UMoviePipelineBlueprintLibrary::GetOverallOutputFrames(Cast<UMoviePipeline>(DeferredMoviePipeline), CurrentFrameIndex, TotalFrames);
-	
-    float CompletionPercentage = FMath::Clamp(CurrentFrameIndex / (float)TotalFrames, 0.f, 1.f);
-	UE_LOG(LogTemp, Log, TEXT("[MRQ] Rendering Progress: %.1f%%"), CompletionPercentage * 100.f);
-
-    SendProgressUpdate(CurrentJobId, CompletionPercentage);
-
-    if (FMath::IsNearlyEqual(CompletionPercentage, 1.0), 0.01)
-    {
-        UE_LOG(LogTemp, Log, TEXT("[MRQ] Completion Percentage is 100%%."));
-        if (ProgressTickerHandle.IsValid())
-        {
-			FTSTicker::GetCoreTicker().RemoveTicker(ProgressTickerHandle);
-			ProgressTickerHandle.Reset();
-        }
-
-        return false;
-    }
-
-    return true;
-}
-
-void UMoviePipelineNativeHostExecutor::SendProgressUpdate(const FString& JobId, float Progress)
+void UMoviePipelineNativeDeferredExecutor::SendProgressUpdate(const FString& JobId, float Progress, ERenderJobStatus Status)
 {
     FHttpModule* Http = &FHttpModule::Get();
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = Http->CreateRequest();
 
-    Request->OnProcessRequestComplete().BindLambda([](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bSuccess)
+    bProgressRequestInFlight = true;
+    Request->OnProcessRequestComplete().BindLambda([this](FHttpRequestPtr /*Request*/, FHttpResponsePtr /*Response*/, bool /*bSuccess*/)
     {
-	    // Handle the response here
+        bProgressRequestInFlight = false;
+        if (bHasPendingProgress)
+        {
+            bHasPendingProgress = false;
+            const float Latest = PendingProgressValue;
+            PendingProgressValue = -1.0f;
+            MaybeSendProgressUpdate(Latest);
+        }
     });
 
     Request->SetURL(FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/progress"), *JobId));
@@ -326,12 +370,20 @@ void UMoviePipelineNativeHostExecutor::SendProgressUpdate(const FString& JobId, 
     TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
 
     JsonObject->SetNumberField("progress_percent", Progress);
-    JsonObject->SetStringField("status", "rendering");
+    JsonObject->SetStringField("status", GetStatusString(Status));
 
-    FTimespan OutEstimate;
-    if (UMoviePipelineBlueprintLibrary::GetEstimatedTimeRemaining(DeferredMoviePipeline, OutEstimate))
+    // Only calculate ETA if we have a valid pipeline and are in rendering state
+    if (DeferredMoviePipeline && Status == ERenderJobStatus::rendering)
     {
-        JsonObject->SetNumberField("progress_eta_seconds", OutEstimate.GetSeconds());
+        FTimespan OutEstimate;
+        if (UMoviePipelineBlueprintLibrary::GetEstimatedTimeRemaining(DeferredMoviePipeline, OutEstimate))
+        {
+            JsonObject->SetNumberField("progress_eta_seconds", OutEstimate.GetSeconds());
+        }
+        else
+        {
+            JsonObject->SetNumberField("progress_eta_seconds", -1);
+        }
     }
     else
     {
@@ -346,12 +398,94 @@ void UMoviePipelineNativeHostExecutor::SendProgressUpdate(const FString& JobId, 
 	Request->ProcessRequest();
 }
 
-void UMoviePipelineNativeHostExecutor::CallbackOnExecutorFinished(UMoviePipelineExecutorBase* PipelineExecutor,
+// Throttled progress reporting to avoid excessive HTTP calls.
+void UMoviePipelineNativeDeferredExecutor::MaybeSendProgressUpdate(float Progress)
+{
+    // Clamp to [0,1]
+    Progress = FMath::Clamp(Progress, 0.0f, 1.0f);
+
+    // Allow console override of thresholds (optional)
+    if (IConsoleVariable* CVarInterval = IConsoleManager::Get().FindConsoleVariable(TEXT("mrq.progress.MinIntervalSec")))
+    {
+        ProgressUpdateMinIntervalSec = FMath::Max(0.0f, CVarInterval->GetFloat());
+    }
+    if (IConsoleVariable* CVarDelta = IConsoleManager::Get().FindConsoleVariable(TEXT("mrq.progress.MinDelta")))
+    {
+        ProgressUpdateMinDelta = FMath::Clamp(CVarDelta->GetFloat(), 0.0f, 1.0f);
+    }
+
+    const double NowSec = FPlatformTime::Seconds();
+    const bool bFirst = (LastProgressSentTimeSec < 0.0) || (LastProgressSentValue < 0.0f);
+    const float Delta = (LastProgressSentValue < 0.0f) ? 1.0f : FMath::Abs(Progress - LastProgressSentValue);
+    const double Elapsed = bFirst ? DBL_MAX : (NowSec - LastProgressSentTimeSec);
+
+    const bool bAtEnd = FMath::IsNearlyEqual(Progress, 1.0f, 0.0001f);
+    const bool bTimeOk = Elapsed >= ProgressUpdateMinIntervalSec;
+    const bool bDeltaOk = Delta >= ProgressUpdateMinDelta;
+
+    if (!bFirst && !bAtEnd && !bTimeOk && !bDeltaOk)
+    {
+        // Not enough change/time to justify an update.
+        return;
+    }
+
+    if (bProgressRequestInFlight)
+    {
+        // Coalesce: remember the most recent progress and send when in-flight request completes.
+        bHasPendingProgress = true;
+        PendingProgressValue = Progress;
+        return;
+    }
+
+    LastProgressSentTimeSec = NowSec;
+    LastProgressSentValue = Progress;
+    SendProgressUpdate(CurrentJobId, Progress, ERenderJobStatus::rendering);
+}
+
+void UMoviePipelineNativeDeferredExecutor::SendStatusNotification(ERenderJobStatus Status, float Progress)
+{
+    // Avoid sending duplicate status notifications
+    if (Status == LastReportedStatus)
+    {
+        return;
+    }
+    
+    SendProgressUpdate(CurrentJobId, Progress, Status);
+    LastReportedStatus = Status;
+    
+    UE_LOG(LogTemp, Log, TEXT("%s: Sent status notification: %s (%.1f%%)"), ANSI_TO_TCHAR(__FUNCTION__), *GetStatusString(Status), Progress);
+}
+
+FString UMoviePipelineNativeDeferredExecutor::GetStatusString(ERenderJobStatus Status) const
+{
+    switch (Status)
+    {
+    case ERenderJobStatus::queued:
+        return TEXT("queued");
+    case ERenderJobStatus::starting:
+        return TEXT("starting");
+    case ERenderJobStatus::rendering:
+        return TEXT("rendering");
+    case ERenderJobStatus::encoding:
+    	return TEXT("encoding");
+    case ERenderJobStatus::completed:
+        return TEXT("completed");
+    case ERenderJobStatus::failed:
+        return TEXT("failed");
+    case ERenderJobStatus::canceled:
+        return TEXT("canceled");
+
+    default:
+        return TEXT("failed");
+    }
+}
+
+void UMoviePipelineNativeDeferredExecutor::CallbackOnExecutorFinished(UMoviePipelineExecutorBase* PipelineExecutor,
     bool bSuccess)
 {
 }
 
-void UMoviePipelineNativeHostExecutor::CallbackOnMoviePipelineWorkFinished(FMoviePipelineOutputData MoviePipelineOutputData)
+void UMoviePipelineNativeDeferredExecutor::CallbackOnMoviePipelineWorkFinished(FMoviePipelineOutputData MoviePipelineOutputData)
 {
 	SendHttpOnMoviePipelineWorkFinished(MoviePipelineOutputData);
 	
@@ -370,14 +504,14 @@ void UMoviePipelineNativeHostExecutor::CallbackOnMoviePipelineWorkFinished(FMovi
     OnExecutorFinishedImpl();
 }
 
-void UMoviePipelineNativeHostExecutor::OnExecutorFinishedImpl()
+void UMoviePipelineNativeDeferredExecutor::OnExecutorFinishedImpl()
 {
-    UE_LOG(LogTemp, Log, TEXT("%s OnExecutorFinishedImpl"), UTF8_TO_TCHAR(__FUNCTION__));
+    UE_LOG(LogTemp, Log, TEXT("%s"), ANSI_TO_TCHAR(__FUNCTION__));
     bRendering = false;
     Super::OnExecutorFinishedImpl();
 }
 
-void UMoviePipelineNativeHostExecutor::SendHttpOnMoviePipelineWorkFinished(
+void UMoviePipelineNativeDeferredExecutor::SendHttpOnMoviePipelineWorkFinished(
     const FMoviePipelineOutputData& MoviePipelineOutputData)
 {
 	bool bSuccess = MoviePipelineOutputData.bSuccess;
@@ -395,11 +529,9 @@ void UMoviePipelineNativeHostExecutor::SendHttpOnMoviePipelineWorkFinished(
 	TMap<FString, FString> InHeaders;
 	InHeaders.Add(TEXT("Content-Type"), TEXT("application/json"));
 	int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
-
-	OnExecutorFinishedImpl();
 }
 
-void UMoviePipelineNativeHostExecutor::WaitShaderCompilingComplete()
+void UMoviePipelineNativeDeferredExecutor::WaitShaderCompilingComplete()
 {
     if (GShaderCompilingManager)
     {
@@ -409,16 +541,16 @@ void UMoviePipelineNativeHostExecutor::WaitShaderCompilingComplete()
             FPlatformProcess::Sleep(0.5f);
             GLog->Flush();
 
-            UE_LOG(LogTemp, Warning, TEXT("%s: Wait shader compile complete..."), UTF8_TO_TCHAR(__FUNCTION__));
+            UE_LOG(LogTemp, Warning, TEXT("%s: Wait shader compile complete..."), ANSI_TO_TCHAR(__FUNCTION__));
 	    }
 
         GShaderCompilingManager->ProcessAsyncResults(false, true);
         GShaderCompilingManager->FinishAllCompilation();
-        UE_LOG(LogTemp, Warning, TEXT("%s: GShaderCompilingManager->FinishAllCompilation"), UTF8_TO_TCHAR(__FUNCTION__));
+        UE_LOG(LogTemp, Warning, TEXT("%s: GShaderCompilingManager->FinishAllCompilation"), ANSI_TO_TCHAR(__FUNCTION__));
     }
 }
 
-UWorld* UMoviePipelineNativeHostExecutor::FindGameWorld() const
+UWorld* UMoviePipelineNativeDeferredExecutor::FindGameWorld() const
 {
     if (!GEngine) return nullptr;
 

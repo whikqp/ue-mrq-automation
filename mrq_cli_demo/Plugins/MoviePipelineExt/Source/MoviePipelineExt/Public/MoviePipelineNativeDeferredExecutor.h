@@ -1,9 +1,8 @@
-
 #pragma once
 
 #include "CoreMinimal.h"
 #include "MoviePipelineExecutor.h"
-#include "MoviePipelineNativeHostExecutor.generated.h"
+#include "MoviePipelineNativeDeferredExecutor.generated.h"
 
 class URenderGateWorldSubsystem;
 class UMoviePipelineBase;
@@ -11,20 +10,37 @@ class UMoviePipelineOutputSetting;
 class UMoviePipelineCommandLineEncoder;
 class UMoviePipelineGameOverrideSetting;
 
+// Render job status enumeration for server communication
+UENUM(BlueprintType)
+enum class ERenderJobStatus : uint8
+{
+	queued,
+	starting,
+	rendering,
+	encoding,
+	uploading,
+	completed,
+	failed,
+	canceling,
+	canceled
+};
+
 /**
  * 
  */
 UCLASS()
-class MOVIEPIPELINEEXT_API UMoviePipelineNativeHostExecutor : public UMoviePipelineExecutorBase
+class MOVIEPIPELINEEXT_API UMoviePipelineNativeDeferredExecutor : public UMoviePipelineExecutorBase
 {
 	GENERATED_BODY()
 
 public:
-	UMoviePipelineNativeHostExecutor();
+	UMoviePipelineNativeDeferredExecutor();
 
 	virtual void Execute_Implementation(UMoviePipelineQueue* InPipelineQueue) override;
 
 	virtual bool IsRendering_Implementation() const override;
+
+	virtual void OnBeginFrame_Implementation() override;
 
 	virtual void OnExecutorFinishedImpl() override;
 
@@ -41,14 +57,19 @@ private:
 	void OnReceiveJobInfo(int32 RequestIndex, int32 ResponseCode, const FString& Message);
 
 	void CallbackOnEnginePreExit();
-	
+
 	bool PollReady(float DeltaTime);
 
 	void StartRenderNow();
 
-	bool UpdateProgress(float DeltaTime);
+	void SendProgressUpdate(const FString& JobId, float Progress, ERenderJobStatus Status = ERenderJobStatus::rendering);
 
-	void SendProgressUpdate(const FString& JobId, float Progress);
+	// Rate-limited progress updates
+	void MaybeSendProgressUpdate(float Progress);
+
+	void SendStatusNotification(ERenderJobStatus Status, float Progress = 0.0f);
+
+	FString GetStatusString(ERenderJobStatus Status) const;
 
 	void CallbackOnExecutorFinished(UMoviePipelineExecutorBase* PipelineExecutor, bool bSuccess);
 
@@ -61,7 +82,7 @@ private:
 private:
 	UPROPERTY()
 	UMoviePipeline* DeferredMoviePipeline = nullptr;
-	
+
 	UPROPERTY()
 	UMoviePipelineQueue* PendingQueue = nullptr;
 
@@ -82,12 +103,11 @@ private:
 	int32 MovieQuality = 1;
 
 	FFrameRate RenderFrameRate = FFrameRate(30, 1);
-	
+
 	FString MovieFormat;
 	FString CurrentJobId;
 	FString LevelSequencePath;
-	FString LevelPath;
-	
+
 	bool bWaiting = false;
 	bool bRendering = false;
 
@@ -100,6 +120,27 @@ private:
 	TWeakObjectPtr<URenderGateWorldSubsystem> BoundGate;
 	FDelegateHandle OnReadyHandle;
 	bool bGateDelegateBound = false;
-	
+
 	FTSTicker::FDelegateHandle ProgressTickerHandle;
+
+	// State tracking for optimized status notifications
+	EMovieRenderPipelineState LastPipelineState = EMovieRenderPipelineState::Uninitialized;
+	ERenderJobStatus LastReportedStatus = ERenderJobStatus::queued;
+	bool bHasSentStartingNotification = false;
+	bool bHasSentFinalizeNotification = false;
+	bool bHasSentExportNotification = false;
+
+	// Throttling configuration and state
+	// Minimum seconds between HTTP progress updates
+	float ProgressUpdateMinIntervalSec = 0.75f;
+	// Minimum change in progress (0..1) to trigger an update
+	float ProgressUpdateMinDelta = 0.01f; // 1%
+	// Last time and value sent
+	double LastProgressSentTimeSec = -1.0;
+	float LastProgressSentValue = -1.0f;
+	// Whether an HTTP request is currently in flight
+	bool bProgressRequestInFlight = false;
+	// If a request is in flight, remember the latest progress to send when possible
+	bool bHasPendingProgress = false;
+	float PendingProgressValue = -1.0f;
 };
