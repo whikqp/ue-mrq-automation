@@ -117,21 +117,21 @@ def run_job(db: Session, job: Job, template: dict) -> None:
     db.commit()
 
    
-    render_completed = False
-    printed_rc = False
-    max_wait_time = 300
     wait_start = time.time()
-
-    
-    while not render_completed and (time.time() - wait_start) < max_wait_time:
+    while True:
         rc = proc.poll()
-
+        cost_time = time.time() - wait_start
+        print(f"Job {job.job_id} running {cost_time:.1f}s ...")
+        
         if rc is None:
             print(f"Process {proc.pid} is still running...")
         else:
             print(f"Process {proc.pid} return with code {rc}.")
-            printed_rc = True
+
             if rc == 0:
+                if job.status_enum in [JobStatus.queued, JobStatus.starting, JobStatus.rendering]: # Check error pre-exit
+                    job.status = JobStatus.failed.value
+                
                 job.ended_at = datetime.now(CN_TZ)
                 db.commit()
                 # On normal exit, also print a short log tail for visibility
@@ -145,34 +145,17 @@ def run_job(db: Session, job: Job, template: dict) -> None:
                         print("---- UE log tail (last 5) ----")
                 except Exception as e:
                     print(f"Read UE log failed: {e}")
-                render_completed = True
+                return
             else:
                 # Non-zero exit: print UE log tail from last 'error' line to end
                 _print_ue_log_tail(from_error=True)
                 job.status = JobStatus.failed.value
                 db.commit()
                 return
-            break
+            
 
         db.refresh(job)
         if job.status_enum in [JobStatus.completed, JobStatus.encoding, JobStatus.uploading]:
-            render_completed = True
+            print(f"Job status has changed to {job.status} via ue_notifications api.")
 
         time.sleep(5)
-
-    # If loop exited due to status changes (not rc), ensure we still report rc
-    if not printed_rc:
-        rc_final = proc.poll()
-        if rc_final is None:
-            try:
-                rc_final = proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                rc_final = None
-        if rc_final is not None:
-            print(f"Process {proc.pid} return with code {rc_final}.")
-
-    if not render_completed:
-        job.status = JobStatus.failed.value
-        job.ended_at = datetime.now(CN_TZ)
-        db.commit()
-        return
