@@ -8,13 +8,17 @@ from .scheduler.scheduler import Scheduler
 from contextlib import asynccontextmanager
 from .api import ue_notifications
 from .middleware.error_handlers import *
+from .utils.logging import setup_logging
+from .utils.logging_tools import *
+
+setup_logging()
 
 Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
 async def custom_lifespan(app: FastAPI):
     # Startup
-    print("custom_lifespan: Startup")
+    info("custom_lifespan: Startup")
     registry = TemplateRegistry(Path("configs/templates.json"))
     registry.load()
     app.state.registry = registry
@@ -26,7 +30,7 @@ async def custom_lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    print("custom_lifespan: Shutdown")
+    info("custom_lifespan: Shutdown")
     scheduler = getattr(app.state, "scheduler", None)
     if scheduler:
         scheduler.stop()
