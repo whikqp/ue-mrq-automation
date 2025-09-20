@@ -61,14 +61,7 @@ private:
 	bool PollReady(float DeltaTime);
 
 	void StartRenderNow();
-
-	void SendProgressUpdate(const FString& JobId, float Progress, ERenderJobStatus Status = ERenderJobStatus::rendering);
-
-	// Rate-limited progress updates
-	void MaybeSendProgressUpdate(float Progress);
-
-	void SendStatusNotification(ERenderJobStatus Status, float Progress = 0.0f);
-
+	
 	FString GetStatusString(ERenderJobStatus Status) const;
 
 	void CallbackOnExecutorFinished(UMoviePipelineExecutorBase* PipelineExecutor, bool bSuccess);
@@ -131,16 +124,8 @@ private:
 	bool bHasSentExportNotification = false;
 
 	// Throttling configuration and state
-	// Minimum seconds between HTTP progress updates
-	float ProgressUpdateMinIntervalSec = 0.75f;
-	// Minimum change in progress (0..1) to trigger an update
-	float ProgressUpdateMinDelta = 0.01f; // 1%
-	// Last time and value sent
-	double LastProgressSentTimeSec = -1.0;
-	float LastProgressSentValue = -1.0f;
-	// Whether an HTTP request is currently in flight
-	bool bProgressRequestInFlight = false;
-	// If a request is in flight, remember the latest progress to send when possible
-	bool bHasPendingProgress = false;
-	float PendingProgressValue = -1.0f;
+	double LastProgressReportTime = 0.0;
+	float LastReportProgress = -1.f;
+	const float ProgressReportInterval = 1.0f; // In seconds
+	const float ProgressReportStep = 0.01f;	// 1% step
 };

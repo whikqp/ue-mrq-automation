@@ -13,7 +13,10 @@ router = APIRouter(prefix="/ue-notifications", tags=["ue-notifications"])
 @router.post("/job/{job_id}/progress")
 async def update_job_progress(job_id: str, request: Request):
     """Receive progress updates pushed from UE5"""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON data in request body", "status": "error"}
 
     with session_scope() as db:
         job = db.query(Job).filter(Job.job_id == job_id).first()
@@ -40,7 +43,10 @@ async def update_job_progress(job_id: str, request: Request):
 @router.post("/job/{job_id}/render-complete")
 async def render_complete(job_id: str, request: Request):
     """Receive notification from UE5 that rendering is complete"""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON data in request body", "status": "error"}
     print(f"Received data from UE5: {data}")
 
     with session_scope() as db:
@@ -77,7 +83,10 @@ async def render_complete(job_id: str, request: Request):
 @router.post("/job/{job_id}/encoding-status")
 async def encoding_status(job_id: str, request: Request):
     """Receive encoding status updates from UE5""" 
-    data = await request.json()
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON data in request body", "status": "error"}
 
     with session_scope() as db: 
         job = db.query(Job).filter(Job.job_id == job_id).first()

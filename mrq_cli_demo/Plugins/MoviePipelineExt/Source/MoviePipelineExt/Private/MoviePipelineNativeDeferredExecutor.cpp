@@ -190,49 +190,86 @@ static FString EnumToString(const T EnumValue)
 void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 {
 	EMovieRenderPipelineState PipelineState = UMoviePipelineBlueprintLibrary::GetPipelineState(DeferredMoviePipeline);
-	FString PipelineStateName = EnumToString<EMovieRenderPipelineState>(PipelineState);
-	UE_LOG(LogTemp, Warning, TEXT("%s MoviePipelineState: %s"), ANSI_TO_TCHAR(__FUNCTION__), *PipelineStateName);
 
+	// For states that only fire once, check if the state has changed.
+	// ProducingFrames is handled separately as it needs to update continuously (with throttling).
+	if (PipelineState == LastPipelineState && PipelineState != EMovieRenderPipelineState::ProducingFrames)
+	{
+		return;
+	}
+	
+	FString PipelineStateName = EnumToString<EMovieRenderPipelineState>(PipelineState);
+	UE_LOG(LogTemp, Warning, TEXT("%s MoviePipelineState changed to: %s"), ANSI_TO_TCHAR(__FUNCTION__), *PipelineStateName);
+	
+	const FString InURL = FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/progress"), *CurrentJobId);
+	const FString InVerb = TEXT("POST");
+	FString InMessage;
+	TMap<FString, FString> InHeaders;
+	InHeaders.Add(TEXT("Content-Type"), TEXT("application/json"));
+	
+	FJsonObjectWrapper JsonWrapper;
+	
 	switch (PipelineState)
 	{
 		case EMovieRenderPipelineState::Uninitialized:
 		{
-			if (!bHasSentStartingNotification)
-			{
-				SendStatusNotification(ERenderJobStatus::starting, 0.0f);
-				bHasSentStartingNotification = true;
-			}
+			JsonWrapper.JsonObject.Get()->SetStringField(TEXT("status"), GetStatusString(ERenderJobStatus::starting));
+			JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_percent"), 0.f);
+			JsonWrapper.JsonObjectToString(InMessage);
+				
+			int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
 			break;
 		}
 		case EMovieRenderPipelineState::ProducingFrames:
 		{
-			// Throttled progress update to limit HTTP calls.
-			if (DeferredMoviePipeline)
+			const float CompletionPercentage = UMoviePipelineBlueprintLibrary::GetCompletionPercentage(DeferredMoviePipeline);
+			const double CurrentTime = FPlatformTime::Seconds();
+
+			if (LastPipelineState != EMovieRenderPipelineState::ProducingFrames ||
+				CurrentTime - LastProgressReportTime >= ProgressReportInterval ||
+				CompletionPercentage >= LastReportProgress + ProgressReportStep)
 			{
-				int32 CurrentFrameIndex = 0;
-				int32 TotalFrames = 1;
-				UMoviePipelineBlueprintLibrary::GetOverallOutputFrames(Cast<UMoviePipeline>(DeferredMoviePipeline), CurrentFrameIndex, TotalFrames);
-				const float CompletionPercentage = FMath::Clamp(TotalFrames > 0 ? (CurrentFrameIndex / (float)TotalFrames) : 0.f, 0.f, 1.f);
-				MaybeSendProgressUpdate(CompletionPercentage);
+				UE_LOG(LogTemp, Log, TEXT("CompletionPercentage value: %.1f%%"), CompletionPercentage * 100.f);
+
+				
+				JsonWrapper.JsonObject.Get()->SetStringField(TEXT("status"), GetStatusString(ERenderJobStatus::rendering));
+				JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_percent"), CompletionPercentage);
+
+				FTimespan OutEstimate;
+				if (UMoviePipelineBlueprintLibrary::GetEstimatedTimeRemaining(DeferredMoviePipeline, OutEstimate))
+				{
+					UE_LOG(LogTemp, Log, TEXT("%s: Estimated time remaining: %.1f"), ANSI_TO_TCHAR(__FUNCTION__), OutEstimate.GetTotalSeconds());
+					int32 EtaSecs = static_cast<int32>(OutEstimate.GetTotalSeconds());
+					JsonWrapper.JsonObject.Get()->SetNumberField("progress_eta_seconds", EtaSecs);
+				}
+				else
+				{
+					JsonWrapper.JsonObject.Get()->SetNumberField("progress_eta_seconds", -1);
+				}
+
+				JsonWrapper.JsonObjectToString(InMessage);
+
+				int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
 			}
-			break;	
+
+			LastProgressReportTime = CurrentTime;
+			LastReportProgress = CompletionPercentage;
+				
+			break;
 		}
 		case EMovieRenderPipelineState::Finalize:
 		{
-			if (!bHasSentFinalizeNotification)
-			{
-				SendStatusNotification(ERenderJobStatus::encoding, 1.0f);
-				bHasSentFinalizeNotification = true;
-			}
+			JsonWrapper.JsonObject.Get()->SetStringField(TEXT("status"), GetStatusString(ERenderJobStatus::encoding));
+			JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_percent"), 1.f);
+			JsonWrapper.JsonObjectToString(InMessage);
+			
+			int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
+			
 			break;	
 		}
 		case EMovieRenderPipelineState::Export:
 		{
-			if (!bHasSentExportNotification)
-			{
-				SendStatusNotification(ERenderJobStatus::encoding, 1.0f);
-				bHasSentExportNotification = true;
-			}
+			
 			break;	
 		}
 		case EMovieRenderPipelineState::Finished:
@@ -343,117 +380,6 @@ void UMoviePipelineNativeDeferredExecutor::StartRenderNow()
     DeferredMoviePipeline->Initialize(PendingJob);
 
     // Progress updates are now handled in OnBeginFrame with throttling.
-}
-
-void UMoviePipelineNativeDeferredExecutor::SendProgressUpdate(const FString& JobId, float Progress, ERenderJobStatus Status)
-{
-    FHttpModule* Http = &FHttpModule::Get();
-	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = Http->CreateRequest();
-
-    bProgressRequestInFlight = true;
-    Request->OnProcessRequestComplete().BindLambda([this](FHttpRequestPtr /*Request*/, FHttpResponsePtr /*Response*/, bool /*bSuccess*/)
-    {
-        bProgressRequestInFlight = false;
-        if (bHasPendingProgress)
-        {
-            bHasPendingProgress = false;
-            const float Latest = PendingProgressValue;
-            PendingProgressValue = -1.0f;
-            MaybeSendProgressUpdate(Latest);
-        }
-    });
-
-    Request->SetURL(FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/progress"), *JobId));
-	Request->SetVerb(TEXT("POST"));
-    Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-
-    TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
-
-    JsonObject->SetNumberField("progress_percent", Progress);
-    JsonObject->SetStringField("status", GetStatusString(Status));
-
-    // Only calculate ETA if we have a valid pipeline and are in rendering state
-    if (DeferredMoviePipeline && Status == ERenderJobStatus::rendering)
-    {
-        FTimespan OutEstimate;
-        if (UMoviePipelineBlueprintLibrary::GetEstimatedTimeRemaining(DeferredMoviePipeline, OutEstimate))
-        {
-            JsonObject->SetNumberField("progress_eta_seconds", OutEstimate.GetSeconds());
-        }
-        else
-        {
-            JsonObject->SetNumberField("progress_eta_seconds", -1);
-        }
-    }
-    else
-    {
-        JsonObject->SetNumberField("progress_eta_seconds", -1);
-    }
-
-    FString JsonStr;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonStr);
-	FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
-
-	Request->SetContentAsString(JsonStr);
-	Request->ProcessRequest();
-}
-
-// Throttled progress reporting to avoid excessive HTTP calls.
-void UMoviePipelineNativeDeferredExecutor::MaybeSendProgressUpdate(float Progress)
-{
-    // Clamp to [0,1]
-    Progress = FMath::Clamp(Progress, 0.0f, 1.0f);
-
-    // Allow console override of thresholds (optional)
-    if (IConsoleVariable* CVarInterval = IConsoleManager::Get().FindConsoleVariable(TEXT("mrq.progress.MinIntervalSec")))
-    {
-        ProgressUpdateMinIntervalSec = FMath::Max(0.0f, CVarInterval->GetFloat());
-    }
-    if (IConsoleVariable* CVarDelta = IConsoleManager::Get().FindConsoleVariable(TEXT("mrq.progress.MinDelta")))
-    {
-        ProgressUpdateMinDelta = FMath::Clamp(CVarDelta->GetFloat(), 0.0f, 1.0f);
-    }
-
-    const double NowSec = FPlatformTime::Seconds();
-    const bool bFirst = (LastProgressSentTimeSec < 0.0) || (LastProgressSentValue < 0.0f);
-    const float Delta = (LastProgressSentValue < 0.0f) ? 1.0f : FMath::Abs(Progress - LastProgressSentValue);
-    const double Elapsed = bFirst ? DBL_MAX : (NowSec - LastProgressSentTimeSec);
-
-    const bool bAtEnd = FMath::IsNearlyEqual(Progress, 1.0f, 0.0001f);
-    const bool bTimeOk = Elapsed >= ProgressUpdateMinIntervalSec;
-    const bool bDeltaOk = Delta >= ProgressUpdateMinDelta;
-
-    if (!bFirst && !bAtEnd && !bTimeOk && !bDeltaOk)
-    {
-        // Not enough change/time to justify an update.
-        return;
-    }
-
-    if (bProgressRequestInFlight)
-    {
-        // Coalesce: remember the most recent progress and send when in-flight request completes.
-        bHasPendingProgress = true;
-        PendingProgressValue = Progress;
-        return;
-    }
-
-    LastProgressSentTimeSec = NowSec;
-    LastProgressSentValue = Progress;
-    SendProgressUpdate(CurrentJobId, Progress, ERenderJobStatus::rendering);
-}
-
-void UMoviePipelineNativeDeferredExecutor::SendStatusNotification(ERenderJobStatus Status, float Progress)
-{
-    // Avoid sending duplicate status notifications
-    if (Status == LastReportedStatus)
-    {
-        return;
-    }
-    
-    SendProgressUpdate(CurrentJobId, Progress, Status);
-    LastReportedStatus = Status;
-    
-    UE_LOG(LogTemp, Log, TEXT("%s: Sent status notification: %s (%.1f%%)"), ANSI_TO_TCHAR(__FUNCTION__), *GetStatusString(Status), Progress);
 }
 
 FString UMoviePipelineNativeDeferredExecutor::GetStatusString(ERenderJobStatus Status) const
