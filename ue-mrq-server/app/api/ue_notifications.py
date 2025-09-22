@@ -100,7 +100,7 @@ async def encoding_status(job_id: str, request: Request):
             return {"error": "Invalid status"}
         
         if status == JobStatus.completed:
-            job.progress_percent = 100.0
+            
             job.ended_at = now_cn()
 
             if "video_url" in data:

@@ -143,6 +143,7 @@ def run_job(db: Session, job: Job, template: dict) -> None:
                         print("---- UE log tail (last 5) ----")
                         print(tail)
                         print("---- UE log tail (last 5) ----")
+                        print(f"More details: {ue_log_absolute}")
                 except Exception as e:
                     print(f"Read UE log failed: {e}")
                 return
