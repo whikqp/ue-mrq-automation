@@ -6,23 +6,19 @@
 #include "RenderGateWorldSubsystem.h"
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineOutputSetting.h"
-#include "MoviePipelineCommandLineEncoder.h"
+#include "MoviePipelineCustomEncoder.h"
 #include "LevelSequence.h"
 #include "MoviePipelineDeferredPasses.h"
 #include "MoviePipelineImageSequenceOutput.h"
 #include "MoviePipelineGameOverrideSetting.h"
 #include "ShaderCompiler.h"
 #include "HAL/IConsoleManager.h"
+#include "Misc/DefaultValueHelper.h"
 
 #define LOCTEXT_NAMESPACE "MoviePipelineExecutorExt"
 
 UMoviePipelineNativeDeferredExecutor::UMoviePipelineNativeDeferredExecutor()
 {
-    LastPipelineState = EMovieRenderPipelineState::Uninitialized;
-    LastReportedStatus = ERenderJobStatus::queued;
-    bHasSentStartingNotification = false;
-    bHasSentFinalizeNotification = false;
-    bHasSentExportNotification = false;
 }
 
 void UMoviePipelineNativeDeferredExecutor::InitFromCommandLineParams()
@@ -110,7 +106,7 @@ void UMoviePipelineNativeDeferredExecutor::Execute_Implementation(UMoviePipeline
     PendingJob->Map = FSoftObjectPath(World);
 
 	MRQ_OutputSetting = Cast<UMoviePipelineOutputSetting>(PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineOutputSetting::StaticClass()));
-    MRQ_CommandLineEncoder = Cast<UMoviePipelineCommandLineEncoder>(PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineCommandLineEncoder::StaticClass()));
+    MRQ_CommandLineEncoder = Cast<UMoviePipelineCustomEncoder>(PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineCustomEncoder::StaticClass()));
     MRQ_GameOverrideSetting = Cast<UMoviePipelineGameOverrideSetting>(PendingJob->GetConfiguration()->FindOrAddSettingByClass(UMoviePipelineGameOverrideSetting::StaticClass()));
 
     ULevelSequence* LevelSequence = Cast<ULevelSequence>(PendingJob->Sequence.TryLoad());
@@ -193,13 +189,84 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 
 	// For states that only fire once, check if the state has changed.
 	// ProducingFrames is handled separately as it needs to update continuously (with throttling).
-	if (PipelineState == LastPipelineState && PipelineState != EMovieRenderPipelineState::ProducingFrames)
+	if (PipelineState == LastPipelineState && PipelineState != EMovieRenderPipelineState::ProducingFrames && PipelineState != EMovieRenderPipelineState::Export)
 	{
 		return;
 	}
 	
 	FString PipelineStateName = EnumToString<EMovieRenderPipelineState>(PipelineState);
 	UE_LOG(LogTemp, Warning, TEXT("%s MoviePipelineState changed to: %s"), ANSI_TO_TCHAR(__FUNCTION__), *PipelineStateName);
+
+	const auto ComputeEncodingProgress = [this]() -> float
+	{
+		if (!PendingJob)
+		{
+			return -1.f;
+		}
+
+		double WeightedProgress = 0.0;
+		double TotalFrameCount = 0.0;
+
+		for (UMoviePipelineExecutorShot* Shot : PendingJob->ShotInfo)
+		{
+			if (!Shot || !Shot->ShouldRender())
+			{
+				continue;
+			}
+
+			const int32 ShotFrameCount = Shot->ShotInfo.WorkMetrics.TotalOutputFrameCount;
+			if (ShotFrameCount <= 0)
+			{
+				continue;
+			}
+
+			const float ShotProgress = FMath::Clamp(Shot->GetStatusProgress(), 0.f, 1.f);
+			WeightedProgress += static_cast<double>(ShotFrameCount) * ShotProgress;
+			TotalFrameCount += static_cast<double>(ShotFrameCount);
+		}
+
+		if (TotalFrameCount <= 0.0)
+		{
+			return -1.f;
+		}
+
+		const float NormalizedProgress = static_cast<float>(WeightedProgress / TotalFrameCount);
+		return FMath::Clamp(NormalizedProgress, 0.f, 1.f);
+		
+	};
+
+	const auto ExtractEncodingEtaSeconds = [this](int32& OutEtaSeconds) -> bool
+	{
+		if (!PendingJob)
+		{
+			return false;
+		}
+
+		const FString EtaPrefix(TEXT("Encoding ETA:"));
+		for (UMoviePipelineExecutorShot* Shot : PendingJob->ShotInfo)
+		{
+			if (!Shot || !Shot->ShouldRender())
+			{
+				continue;
+			}
+
+			const FString StatusMessage = Shot->GetStatusMessage();
+			if (!StatusMessage.StartsWith(EtaPrefix))
+			{
+				continue;
+			}
+
+			const FString EtaString = StatusMessage.Mid(EtaPrefix.Len()).TrimStartAndEnd();
+			int32 ParsedEtaSeconds = 0;
+			if (FDefaultValueHelper::ParseInt(EtaString, ParsedEtaSeconds))
+			{
+				OutEtaSeconds = FMath::Max(ParsedEtaSeconds, 0);
+				return true;
+			}
+		}
+
+		return false;
+	};
 	
 	const FString InURL = FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/progress"), *CurrentJobId);
 	const FString InVerb = TEXT("POST");
@@ -227,7 +294,7 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 
 			if (LastPipelineState != EMovieRenderPipelineState::ProducingFrames ||
 				CurrentTime - LastProgressReportTime >= ProgressReportInterval ||
-				CompletionPercentage >= LastReportProgress + ProgressReportStep)
+				CompletionPercentage >= LastReportedProgress + ProgressReportStep)
 			{
 				UE_LOG(LogTemp, Log, TEXT("CompletionPercentage value: %.1f%%"), CompletionPercentage * 100.f);
 
@@ -240,36 +307,81 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 				{
 					UE_LOG(LogTemp, Log, TEXT("%s: Estimated time remaining: %.1f"), ANSI_TO_TCHAR(__FUNCTION__), OutEstimate.GetTotalSeconds());
 					int32 EtaSecs = static_cast<int32>(OutEstimate.GetTotalSeconds());
-					JsonWrapper.JsonObject.Get()->SetNumberField("progress_eta_seconds", EtaSecs);
+					JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_eta_seconds"), EtaSecs);
 				}
 				else
 				{
-					JsonWrapper.JsonObject.Get()->SetNumberField("progress_eta_seconds", -1);
+					JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_eta_seconds"), -1);
 				}
 
 				JsonWrapper.JsonObjectToString(InMessage);
 
 				int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
-			}
 
-			LastProgressReportTime = CurrentTime;
-			LastReportProgress = CompletionPercentage;
+				LastProgressReportTime = CurrentTime;
+				LastReportedProgress = CompletionPercentage;
+			}
 				
 			break;
 		}
+
 		case EMovieRenderPipelineState::Finalize:
 		{
-			JsonWrapper.JsonObject.Get()->SetStringField(TEXT("status"), GetStatusString(ERenderJobStatus::encoding));
-			JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_percent"), 1.f);
-			JsonWrapper.JsonObjectToString(InMessage);
+			if (LastPipelineState != EMovieRenderPipelineState::Finalize)
+			{
+				JsonWrapper.JsonObject.Get()->SetStringField(TEXT("status"), GetStatusString(ERenderJobStatus::encoding));
+				JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_percent"), 1.f);
+				JsonWrapper.JsonObjectToString(InMessage);
 			
-			int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
-			
+				int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
+
+				LastProgressReportTime = FPlatformTime::Seconds();
+				LastReportedProgress = 1.f;
+			}
+				
 			break;	
 		}
+		
 		case EMovieRenderPipelineState::Export:
 		{
-			
+			// Note: FFMPEG log level should be set to "info" in DefaultEngine.ini                                                                                                                                                            
+			// under [/Script/MovieRenderPipelineCore.MoviePipelineCommandLineEncoderSettings]                                                                                                                                                
+			// by setting -loglevel info in the CommandLineFormat paramete 	
+			const float EncodingProgress = ComputeEncodingProgress();
+			if (EncodingProgress < 0.f)
+			{
+				break;
+			}
+
+			const float TotalProgress = 1.f + EncodingProgress;	
+			const double CurrentTime = FPlatformTime::Seconds();
+			const bool bStateChanged = LastPipelineState != EMovieRenderPipelineState::Export;
+			const bool bIntervalElapsed = (CurrentTime - LastProgressReportTime) >= ProgressReportInterval;
+			const bool bProgressStepReached = TotalProgress >= LastReportedProgress + ProgressReportStep;
+			const bool bForceUpdate = EncodingProgress >= 1.f - KINDA_SMALL_NUMBER;
+
+			if (bStateChanged || bForceUpdate || bProgressStepReached || bIntervalElapsed)
+			{
+				UE_LOG(LogTemp, Log, TEXT("%s: Encoding progress: %.1f%%"), ANSI_TO_TCHAR(__FUNCTION__), EncodingProgress * 100.f);
+				
+				int32 ProgressEtaSeconds = -1;
+				const bool bHasShotEta = ExtractEncodingEtaSeconds(ProgressEtaSeconds);
+				if (!bHasShotEta)
+				{
+					ProgressEtaSeconds = (EncodingProgress >= 1.f - KINDA_SMALL_NUMBER) ? 0 : -1;
+				}
+				
+				JsonWrapper.JsonObject.Get()->SetStringField(TEXT("status"), GetStatusString(ERenderJobStatus::encoding));
+				JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_percent"), TotalProgress); // rendering progress is 1.f already.
+				JsonWrapper.JsonObject.Get()->SetNumberField(TEXT("progress_eta_seconds"), ProgressEtaSeconds);
+
+				JsonWrapper.JsonObjectToString(InMessage);
+
+				int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
+
+				LastProgressReportTime = CurrentTime;
+				LastReportedProgress = TotalProgress;
+			}
 			break;	
 		}
 		case EMovieRenderPipelineState::Finished:
@@ -279,6 +391,8 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 		default:
 			break;
 	}
+
+	LastPipelineState = PipelineState;
 }
 
 void UMoviePipelineNativeDeferredExecutor::RequestForJobInfo(const FString& JobId)

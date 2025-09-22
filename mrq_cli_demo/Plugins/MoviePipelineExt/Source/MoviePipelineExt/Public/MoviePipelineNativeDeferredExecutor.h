@@ -4,10 +4,10 @@
 #include "MoviePipelineExecutor.h"
 #include "MoviePipelineNativeDeferredExecutor.generated.h"
 
+class UMoviePipelineCustomEncoder;
 class URenderGateWorldSubsystem;
 class UMoviePipelineBase;
 class UMoviePipelineOutputSetting;
-class UMoviePipelineCommandLineEncoder;
 class UMoviePipelineGameOverrideSetting;
 
 // Render job status enumeration for server communication
@@ -86,7 +86,7 @@ private:
 	UMoviePipelineOutputSetting* MRQ_OutputSetting = nullptr;
 
 	UPROPERTY()
-	UMoviePipelineCommandLineEncoder* MRQ_CommandLineEncoder = nullptr;
+	UMoviePipelineCustomEncoder* MRQ_CommandLineEncoder = nullptr;
 
 	UPROPERTY()
 	UMoviePipelineGameOverrideSetting* MRQ_GameOverrideSetting = nullptr;
@@ -117,15 +117,12 @@ private:
 	FTSTicker::FDelegateHandle ProgressTickerHandle;
 
 	// State tracking for optimized status notifications
-	EMovieRenderPipelineState LastPipelineState = EMovieRenderPipelineState::Uninitialized;
+	EMovieRenderPipelineState LastPipelineState = EMovieRenderPipelineState::Finished;
 	ERenderJobStatus LastReportedStatus = ERenderJobStatus::queued;
-	bool bHasSentStartingNotification = false;
-	bool bHasSentFinalizeNotification = false;
-	bool bHasSentExportNotification = false;
 
 	// Throttling configuration and state
 	double LastProgressReportTime = 0.0;
-	float LastReportProgress = -1.f;
+	float LastReportedProgress = -1.f;
 	const float ProgressReportInterval = 1.0f; // In seconds
 	const float ProgressReportStep = 0.01f;	// 1% step
 };
