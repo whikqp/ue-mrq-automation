@@ -98,11 +98,12 @@ async def encoding_status(job_id: str, request: Request):
             status = JobStatus(status_str)
         except ValueError:
             return {"error": "Invalid status"}
-        
-        if status == JobStatus.completed:
-            
-            job.ended_at = now_cn()
 
+        # Always record latest status
+        job.status = status.value
+
+        if status == JobStatus.completed:
+            job.ended_at = now_cn()
             if "video_url" in data:
                 if job.artifacts is None:
                     job.artifacts = JobArtifact(job_id=job.job_id)

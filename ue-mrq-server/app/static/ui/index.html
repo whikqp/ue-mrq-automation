@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UE MRQ 控制台 · ue-mrq-server</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --card: #141820;
+        --border: #2a2f3a;
+        --text: #e2e8f0;
+        --muted: #a0aec0;
+        --accent: #60a5fa; /* blue */
+        --accent-2: #a78bfa; /* purple */
+        --success: #22c55e; /* green */
+        --warn: #f59e0b; /* amber */
+        --error: #ef4444; /* red */
+        --queued: #94a3b8; /* slate */
+      }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: radial-gradient(1200px 600px at 10% -10%, #151a24 0%, var(--bg) 60%);
+        color: var(--text);
+      }
+      .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+      .topbar {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 16px 24px; background: var(--panel); border-bottom: 1px solid var(--border);
+        position: sticky; top: 0; z-index: 10;
+      }
+      .brand { font-weight: 700; letter-spacing: .3px; }
+      .tabs { display: flex; gap: 8px; }
+      .tab {
+        border: 1px solid var(--border); background: #12161d; color: var(--text);
+        padding: 8px 14px; border-radius: 999px; cursor: pointer; font-size: 14px;
+      }
+      .tab.active { background: linear-gradient(90deg, #1a2230, #1f2a3b); border-color: #364055; }
+      .section { display: none; }
+      .section.active { display: block; }
+
+      /* Cards grid */
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+      .card {
+        background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+      }
+      .thumb { aspect-ratio: 16 / 9; width: 100%; object-fit: cover; background: #0e1420; display: block; }
+      .card-body { padding: 12px 12px 14px; }
+      .title { font-size: 15px; font-weight: 600; margin: 2px 0 6px; }
+      .desc { color: var(--muted); font-size: 13px; line-height: 1.25; height: 34px; overflow: hidden; }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+      .btn {
+        background: linear-gradient(180deg, #263347, #1e293b);
+        color: #e8f0ff; border: 1px solid #324058; border-radius: 10px; padding: 8px 12px; cursor: pointer;
+      }
+      .btn.primary { background: linear-gradient(180deg, #2b4165, #24344e); border-color: #3a5380; }
+      .btn:disabled { opacity: .6; cursor: not-allowed; }
+
+      /* Table */
+      table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+      thead th { text-align: left; font-size: 12px; color: var(--muted); background: #121722; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+      tbody td { padding: 10px 12px; border-bottom: 1px solid #1e2532; font-size: 14px; }
+      tbody tr:hover { background: #111722; }
+      .badge { padding: 4px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
+      .status-queued { color: var(--queued); }
+      .status-running { color: var(--accent); }
+      .status-uploading { color: var(--accent-2); }
+      .status-completed { color: var(--success); }
+      .status-failed { color: var(--error); }
+      .status-canceled { color: var(--muted); }
+
+      .progress {
+        background: #0d1422; border: 1px solid #1d2740; height: 10px; border-radius: 999px; overflow: hidden; position: relative;
+      }
+      .progress::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #233048; opacity: .9; }
+      .bar { height: 100%; width: 0%; transition: width .35s ease; }
+      .bar-render { position: absolute; left: 0; top: 0; height: 100%; background: linear-gradient(90deg, #4f8ef7, #60a5fa); }
+      .bar-encode { position: absolute; left: 50%; top: 0; height: 100%; background: linear-gradient(90deg, #a78bfa, #c084fc); }
+      .meta { color: var(--muted); font-size: 12px; }
+      .legend { margin-top: 6px; }
+      .legend-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+      .legend-row.render.active { color: var(--accent); }
+      .legend-row.encode.active { color: var(--accent-2); }
+
+      /* Drawer / Modal */
+      .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+      .overlay.show { display: flex; }
+      .modal { width: min(820px, 92vw); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+      .modal h3 { margin: 6px 0 12px; }
+      .form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .form .full { grid-column: 1 / -1; }
+      label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+      input, select, textarea { width: 100%; box-sizing: border-box; background: #0f1522; color: var(--text); border: 1px solid #2a3650; border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+      textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+      .hint { font-size: 12px; color: var(--muted); }
+
+      .toolbar { display: flex; gap: 10px; justify-content: space-between; margin-bottom: 12px; }
+      .right-actions { display: flex; gap: 8px; }
+      .link { color: var(--accent); text-decoration: none; }
+      .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="brand">UE MRQ 控制台</div>
+      <div class="tabs">
+        <button class="tab active" data-tab="templates">模板 Templates</button>
+        <button class="tab" data-tab="jobs">任务 Jobs</button>
+        <a class="tab" href="/docs" target="_blank" rel="noreferrer">API Docs</a>
+      </div>
+    </div>
+
+    <div class="container">
+      <!-- Templates Section -->
+      <section id="section-templates" class="section active">
+        <div class="toolbar">
+          <div class="hint">从后端读取 <code>/templates</code>，选择模板创建渲染任务。</div>
+          <div class="right-actions">
+            <button class="btn" id="btn-refresh-templates">刷新模板</button>
+          </div>
+        </div>
+        <div id="templates-grid" class="grid"></div>
+      </section>
+
+      <!-- Jobs Section -->
+      <section id="section-jobs" class="section">
+        <div class="toolbar">
+          <div class="hint">任务将保存在浏览器的 localStorage 以便刷新后恢复。</div>
+          <div class="right-actions">
+            <button class="btn" id="btn-refresh-jobs">立即刷新</button>
+            <button class="btn" id="btn-clear-finished">清理已完成</button>
+            <button class="btn" id="btn-clear-all">清空列表</button>
+            <label class="chk"><input type="checkbox" id="toggle-local-only" checked /> 仅显示我创建的任务</label>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Job 名称</th>
+                <th>Job ID</th>
+                <th>模板</th>
+                <th>进度</th>
+                <th>状态</th>
+                <th>ETA</th>
+                <th>持续时长</th>
+                <th>更新时间</th>
+                <th>视频目录</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- Create Job Modal -->
+    <div id="modal" class="overlay" role="dialog" aria-modal="true" aria-hidden="true">
+      <div class="modal">
+        <h3>新建渲染任务</h3>
+        <div class="form">
+          <div>
+            <label>模板 ID</label>
+            <input id="f-template-id" type="text" readonly />
+          </div>
+          <div>
+            <label>模板名称</label>
+            <input id="f-template-name" type="text" readonly />
+          </div>
+          <div>
+            <label>Job 名称（会映射到 session_id）</label>
+            <input id="f-job-name" type="text" placeholder="未填则自动生成 ui-xxxx" />
+          </div>
+          <div>
+            <label>质量 Quality</label>
+            <select id="f-quality">
+              <option>LOW</option>
+              <option>MEDIUM</option>
+              <option selected>HIGH</option>
+              <option>EPIC</option>
+            </select>
+          </div>
+          <div>
+            <label>格式 Format</label>
+            <select id="f-format">
+              <option selected>mp4</option>
+              <option>mov</option>
+            </select>
+          </div>
+          <div class="full">
+            <label>参数 Params (JSON)</label>
+            <textarea id="f-params" placeholder='{"example": 1}'></textarea>
+            <div class="hint">JSON 对象会作为 <code>params</code> 直接发送到 <code>POST /jobs</code></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="btn-cancel">取消</button>
+          <button class="btn primary" id="btn-create">创建任务</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // ===== Utilities =====
+      const $ = (sel) => document.querySelector(sel);
+      const $on = (el, ev, fn) => el.addEventListener(ev, fn);
+      const api = {
+        async getTemplates() {
+          const res = await fetch('/templates');
+          if (!res.ok) throw new Error('获取模板失败');
+          return res.json();
+        },
+        async listJobs(limit = 100, status) {
+          const url = new URL(window.location.origin + '/jobs');
+          if (limit) url.searchParams.set('limit', String(limit));
+          if (status) url.searchParams.set('status', status);
+          const res = await fetch(url);
+          if (!res.ok) throw new Error('获取任务列表失败');
+          return res.json();
+        },
+        async createJob(body) {
+          const res = await fetch('/jobs', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          if (!res.ok) throw new Error('创建任务失败');
+          return res.json();
+        },
+        async getJob(jobId) {
+          const res = await fetch(`/jobs/${jobId}`);
+          if (!res.ok) throw new Error('获取任务失败');
+          return res.json();
+        },
+        async getProgress(jobId) {
+          const res = await fetch(`/jobs/${jobId}/progress`);
+          if (!res.ok) throw new Error('获取进度失败');
+          return res.json();
+        },
+        async cancelJob(jobId) {
+          const res = await fetch(`/jobs/${jobId}/cancel`, { method: 'POST' });
+          if (!res.ok) throw new Error('取消失败');
+          return res.json();
+        },
+        async openPath(path) {
+          const res = await fetch('/system/open-path', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data?.detail?.code || 'OPEN_FAILED');
+          return data;
+        }
+      };
+
+      const LS_KEY = 'ue_mrq_jobs';
+      const RUNNING = new Set(['starting','rendering','encoding','uploading','queued']);
+      const TERMINAL = new Set(['completed','failed','canceled']);
+      const toggleLocalOnly = document.getElementById('toggle-local-only');
+
+      function loadJobs() {
+        try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
+        catch { return []; }
+      }
+      function saveJobs(arr) { localStorage.setItem(LS_KEY, JSON.stringify(arr)); }
+      function fmtPct(x) { const v = Math.max(0, Math.min(100, Math.round((x||0) * 100))); return v + '%'; }
+      function fmtETA(s) {
+        if (s == null) return '-';
+        s = Math.max(0, s|0);
+        const h = String(Math.floor(s/3600)).padStart(2,'0');
+        const m = String(Math.floor((s%3600)/60)).padStart(2,'0');
+        const sec = String(s%60).padStart(2,'0');
+        return `${h}:${m}:${sec}`;
+      }
+      function dur(fromISO, toISO) {
+        if (!fromISO) return '-';
+        const start = new Date(fromISO).getTime();
+        const end = toISO ? new Date(toISO).getTime() : Date.now();
+        const s = Math.max(0, Math.floor((end-start)/1000));
+        return fmtETA(s);
+      }
+      function statusClass(s) {
+        if (!s) return 'status-queued';
+        if (s === 'queued') return 'status-queued';
+        if (s === 'completed') return 'status-completed';
+        if (s === 'failed') return 'status-failed';
+        if (s === 'canceled') return 'status-canceled';
+        if (s === 'uploading') return 'status-uploading';
+        return 'status-running';
+      }
+
+      // Two-stage progress (rendering 0..1, encoding 1..2)
+      function segProgress(p) {
+        const v = Math.max(0, Math.min(2, Number(p) || 0));
+        const r = Math.min(1, v);
+        const e = Math.max(0, Math.min(1, v - 1));
+        const total = (r + e) / 2; // 0..1
+        return { r, e, total };
+      }
+
+      // Fallback ETA when server does not provide (or provides 0)
+      function estimateETA(job) {
+        const ts = job.timestamps || {};
+        const started = ts.started_at ? new Date(ts.started_at).getTime() : (ts.queued_at ? new Date(ts.queued_at).getTime() : null);
+        if (!started) return null;
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - started) / 1000));
+        const seg = segProgress(job.progress?.percent || 0);
+        const p = seg.total;
+        if (p <= 0) return null;
+        const remain = Math.round(elapsedSec * (1 - p) / p);
+        return remain;
+      }
+
+      function shortPath(p) { if (!p) return ''; return p.length > 48 ? ('…' + p.slice(-48)) : p; }
+      function escapeAttr(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+      // Merge server jobs into local storage for consistent polling/UX
+      async function syncJobsFromServer() {
+        try {
+          const data = await api.listJobs(100);
+          const items = data.jobs || [];
+          const local = loadJobs();
+          const showAll = toggleLocalOnly ? !toggleLocalOnly.checked : true;
+          const map = new Map();
+
+          for (const j of local) {
+            map.set(j.job_id, { ...j });
+          }
+
+          if (showAll) {
+            for (const d of items) {
+              const id = d.job_id;
+              const prev = map.get(id);
+            map.set(id, {
+              job_id: id,
+              session_id: d.session_id,
+              name: prev?.name || d.session_id || id,
+              template_id: d.template_id,
+              status: (d.status||'').toLowerCase(),
+              progress: d.progress || prev?.progress || { percent: 0, eta_seconds: null },
+              artifacts: d.artifacts || prev?.artifacts || null,
+              timestamps: d.timestamps || prev?.timestamps || {},
+              _lastPollAt: prev?._lastPollAt || 0,
+              _local: prev?._local || false,
+              _createdAt: prev?._createdAt || d.timestamps?.queued_at || d.timestamps?.started_at || new Date().toISOString(),
+            });
+          }
+        } else {
+          for (const d of items) {
+            const id = d.job_id;
+            const prev = map.get(id);
+            if (!prev || !prev._local) continue;
+            prev.status = (d.status||'').toLowerCase();
+            prev.progress = d.progress || prev.progress;
+            prev.artifacts = d.artifacts || prev.artifacts;
+            prev.timestamps = d.timestamps || prev.timestamps;
+            prev._createdAt = prev._createdAt || d.timestamps?.queued_at || d.timestamps?.started_at || new Date().toISOString();
+            map.set(id, prev);
+          }
+        }
+
+          let merged = Array.from(map.values()).sort((a,b) => {
+            const ta = new Date(a.timestamps?.queued_at || 0).getTime();
+            const tb = new Date(b.timestamps?.queued_at || 0).getTime();
+            return tb - ta;
+          });
+          if (!showAll) {
+            merged = merged.filter(j => j._local);
+          }
+          saveJobs(merged);
+          renderJobs();
+        } catch (e) {
+          // Best-effort; ignore errors
+        }
+      }
+
+      // ===== Tabs =====
+      document.querySelectorAll('.tab[data-tab]').forEach(btn => {
+        $on(btn, 'click', () => {
+          document.querySelectorAll('.tab[data-tab]').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+          const id = btn.getAttribute('data-tab');
+          $(`#section-${id}`).classList.add('active');
+        });
+      });
+
+      // ===== Templates Grid =====
+      const grid = $('#templates-grid');
+      async function renderTemplates() {
+        grid.innerHTML = '<div class="hint">加载中...</div>';
+        try {
+          const data = await api.getTemplates();
+          const items = data.templates || [];
+          if (!items.length) { grid.innerHTML = '<div class="hint">暂无模板</div>'; return; }
+          grid.innerHTML = items.map(t => `
+            <div class="card">
+              ${t.template_thumbnail ? `<img class="thumb" src="${t.template_thumbnail}" alt="thumb">` : `<div class="thumb"></div>`}
+              <div class="card-body">
+                <div class="title" title="${t.template_name}">${t.template_name}</div>
+                <div class="desc" title="${t.template_desc||''}">${t.template_desc||''}</div>
+                <div class="row">
+                  <span class="meta">${t.template_id}</span>
+                  <button class="btn primary" data-new-job="${t.template_id}" data-name="${t.template_name}">新建任务</button>
+                </div>
+              </div>
+            </div>
+          `).join('');
+          grid.querySelectorAll('[data-new-job]').forEach(btn => btn.addEventListener('click', () => openModal({
+            id: btn.getAttribute('data-new-job'),
+            name: btn.getAttribute('data-name')
+          })));
+        } catch (e) {
+          grid.innerHTML = `<div class="hint">加载失败：${e.message}</div>`;
+        }
+      }
+
+      // ===== Create Job Modal =====
+      const modal = $('#modal');
+      const fTplId = $('#f-template-id');
+      const fTplName = $('#f-template-name');
+      const fJobName = $('#f-job-name');
+      const fQuality = $('#f-quality');
+      const fFormat = $('#f-format');
+      const fParams = $('#f-params');
+      const btnCancel = $('#btn-cancel');
+      const btnCreate = $('#btn-create');
+
+      function openModal(tpl) {
+        fTplId.value = tpl.id;
+        fTplName.value = tpl.name || '';
+        fJobName.value = '';
+        fQuality.value = 'HIGH';
+        fFormat.value = 'mp4';
+        fParams.value = '{\n  "example": 1\n}';
+        modal.classList.add('show');
+        modal.setAttribute('aria-hidden', 'false');
+      }
+      function closeModal() {
+        modal.classList.remove('show');
+        modal.setAttribute('aria-hidden', 'true');
+      }
+      btnCancel.addEventListener('click', closeModal);
+      modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+      btnCreate.addEventListener('click', async () => {
+        btnCreate.disabled = true;
+        try {
+          let paramsObj = {};
+          const text = fParams.value.trim();
+          if (text) paramsObj = JSON.parse(text);
+          const name = fJobName.value.trim();
+          const sessionId = name || `ui-${Math.random().toString(16).slice(2,10)}`;
+
+          const body = {
+            template_id: fTplId.value,
+            params: paramsObj,
+            quality: fQuality.value,
+            format: fFormat.value,
+            session_id: sessionId
+          };
+          const resp = await api.createJob(body);
+          // Persist
+          const jobs = loadJobs();
+          jobs.unshift({
+            job_id: resp.job_id,
+            session_id: resp.session_id,
+            name: name || sessionId,
+            template_id: resp.template_id,
+            status: resp.status,
+            progress: { percent: 0, eta_seconds: null },
+            timestamps: { queued_at: new Date().toISOString(), started_at: null, updated_at: new Date().toISOString() },
+            artifacts: null,
+            _lastPollAt: 0,
+            _local: true,
+            _createdAt: new Date().toISOString()
+          });
+          saveJobs(jobs);
+          renderJobs();
+          // Immediate first poll to reflect server-side timestamps/status
+          try {
+            const p = await api.getProgress(resp.job_id);
+            const storedJobs = loadJobs();
+            const cur = storedJobs.find(x => x.job_id === resp.job_id);
+            if (cur && p) {
+              cur.status = (p.status||'').toLowerCase();
+              cur.progress = p.progress || cur.progress;
+              cur.artifacts = p.artifacts || cur.artifacts;
+              cur.timestamps = p.timestamps || cur.timestamps;
+              saveJobs(storedJobs);
+              renderJobs();
+            }
+          } catch {}
+          closeModal();
+          // Switch to Jobs tab
+          document.querySelector('.tab[data-tab="jobs"]').click();
+        } catch (e) {
+          alert('创建失败：' + e.message);
+        } finally {
+          btnCreate.disabled = false;
+        }
+      });
+
+      // ===== Jobs Table & Polling =====
+      const tbody = $('#jobs-tbody');
+      function renderJobs() {
+        const showAll = toggleLocalOnly ? !toggleLocalOnly.checked : true;
+        const stored = loadJobs();
+        const jobs = showAll ? stored : stored.filter(j => j._local);
+        if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="10" class="meta" style="padding:16px">暂无任务</td></tr>'; return; }
+        tbody.innerHTML = jobs.map(j => {
+          const seg = segProgress(j.progress?.percent || 0);
+          const rPct = Math.round(seg.r * 100);
+          const ePct = Math.round(seg.e * 100);
+          const totalPct = Math.round(seg.total * 100);
+          const etaSec = (j.progress?.eta_seconds && j.progress.eta_seconds > 0) ? j.progress.eta_seconds : estimateETA(j);
+          const eta = etaSec != null ? fmtETA(etaSec) : '-';
+          const status = (j.status||'').toLowerCase();
+          const ts = j.timestamps||{};
+          const baseTime = ts.started_at || ts.queued_at || j._createdAt;
+          const durStr = baseTime ? dur(baseTime, ts.ended_at) : '-';
+          const updated = ts.updated_at ? new Date(ts.updated_at).toLocaleString() : '-';
+          const videoUrl = j.artifacts?.video_url || '';
+          const vpath = j.artifacts?.video_path || '';
+          const localPlayer = vpath ? `/system/player?path=${encodeURIComponent(vpath)}` : '';
+          const playHref = videoUrl || localPlayer;
+          const vpathCell = (() => {
+            const links = [];
+            if (vpath) links.push(`<a href="#" class="link" data-action="open-path" data-path="${escapeAttr(vpath)}" title="${escapeAttr(vpath)}">视频目录</a>`);
+            if (playHref) links.push(`<a class="link" href="${playHref}" target="_blank">播放视频</a>`);
+            return links.length ? links.join(' · ') : '-';
+          })();
+          return `
+            <tr data-id="${j.job_id}">
+              <td>${(j.name||'')}</td>
+              <td class="meta">${j.job_id}</td>
+              <td class="meta">${j.template_id||''}</td>
+              <td style="min-width:220px">
+                <div class="progress">
+                  <div class="bar-render" style="width:${(seg.r*50).toFixed(2)}%"></div>
+                  <div class="bar-encode" style="width:${(seg.e*50).toFixed(2)}%"></div>
+                </div>
+                <div class="legend">
+                  <div class="legend-row render ${status==='rendering' ? 'active' : ''}"><span>Rendering</span><span class="val">${rPct}%</span></div>
+                  <div class="legend-row encode ${status==='encoding' ? 'active' : ''}"><span>Encoding</span><span class="val">${ePct}%</span></div>
+                </div>
+              </td>
+              <td><span class="badge ${statusClass(status)}">${status}</span></td>
+              <td>${eta}</td>
+              <td>${durStr}</td>
+              <td class="meta">${updated}</td>
+              <td>${vpathCell}</td>
+              <td>
+                <button class="btn" data-action="detail">详情</button>
+                <button class="btn" data-action="cancel" ${TERMINAL.has(status)?'disabled':''}>取消</button>
+              </td>
+            </tr>`;
+        }).join('');
+
+        // row actions
+        tbody.querySelectorAll('tr').forEach(tr => {
+          const id = tr.getAttribute('data-id');
+          tr.querySelector('[data-action="detail"]').addEventListener('click', async () => {
+            try {
+              const d = await api.getJob(id);
+              alert('Job 详情\n' + JSON.stringify(d, null, 2));
+            } catch (e) { alert('获取详情失败：'+e.message); }
+          });
+          const cancelBtn = tr.querySelector('[data-action="cancel"]');
+          if (cancelBtn) cancelBtn.addEventListener('click', async () => {
+            if (!confirm('确定取消该任务？')) return;
+            try {
+              await api.cancelJob(id);
+              const jobs = loadJobs();
+              const j = jobs.find(x => x.job_id === id);
+              if (j) { j.status = 'canceled'; j.timestamps = j.timestamps || {}; j.timestamps.updated_at = new Date().toISOString(); saveJobs(jobs); renderJobs(); }
+            } catch (e) { alert('取消失败：'+e.message); }
+          });
+          const openPathA = tr.querySelector('[data-action="open-path"]');
+          if (openPathA) openPathA.addEventListener('click', async (ev) => {
+            ev.preventDefault();
+            try {
+              const p = openPathA.getAttribute('data-path');
+              await api.openPath(p);
+            } catch (e) {
+              alert('打开目录失败：' + e.message);
+            }
+          });
+        });
+      }
+
+      async function pollOnce() {
+        const jobs = loadJobs();
+        const now = Date.now();
+        let changed = false;
+        for (const j of jobs) {
+          const status = (j.status||'').toLowerCase();
+          if (TERMINAL.has(status)) continue;
+          // Poll all non-terminal states every ~2s for responsiveness
+          const interval = 2000;
+          if (now - (j._lastPollAt||0) < interval) continue;
+          j._lastPollAt = now;
+          try {
+            const data = await api.getProgress(j.job_id);
+            j.status = (data.status||'').toLowerCase();
+            j.progress = data.progress || j.progress;
+            j.artifacts = data.artifacts || j.artifacts;
+            j.timestamps = data.timestamps || j.timestamps;
+            changed = true;
+          } catch (e) {
+            // ignore transient errors
+          }
+        }
+        if (changed) { saveJobs(jobs); renderJobs(); }
+      }
+
+      // Toolbar
+      $('#btn-refresh-templates').addEventListener('click', renderTemplates);
+      $('#btn-refresh-jobs').addEventListener('click', async () => { await syncJobsFromServer(); pollOnce(); renderJobs(); });
+      $('#btn-clear-finished').addEventListener('click', () => {
+        const rest = loadJobs().filter(j => !TERMINAL.has((j.status||'').toLowerCase()));
+        saveJobs(rest); renderJobs();
+      });
+      const clearAllBtn = $('#btn-clear-all');
+      if (clearAllBtn) clearAllBtn.addEventListener('click', async () => {
+        if (!confirm('确定清空本地任务列表？')) return;
+        localStorage.removeItem(LS_KEY);
+        if (toggleLocalOnly && !toggleLocalOnly.checked) {
+          await syncJobsFromServer();
+        }
+        renderJobs();
+      });
+      if (toggleLocalOnly) toggleLocalOnly.addEventListener('change', async () => {
+        await syncJobsFromServer();
+        renderJobs();
+      });
+
+      // Init
+      renderTemplates();
+      // Initial sync from server, then render and start polling
+      syncJobsFromServer().then(() => { renderJobs(); });
+      setInterval(pollOnce, 1500);
+      // Ensure durations tick even if no data change
+      setInterval(() => { renderJobs(); }, 2000);
+
+      // Expose for console debugging
+      window.__ueMrq = { renderTemplates, renderJobs, pollOnce, syncJobsFromServer };
+    </script>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 import json, uuid, math
 from datetime import datetime
 from typing import Optional, Union
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.storage.oss_adapter import *
@@ -14,6 +14,43 @@ from ..deps import get_registry
 from ..templates.loader import TemplateRegistry
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+@router.get("")
+async def list_jobs(status: Optional[str] = Query(default=None), limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0)):
+    """List recent jobs (desc by created_at). Optional status filter."""
+    with session_scope() as db:
+        stmt = select(Job).order_by(Job.created_at.desc())
+        if status:
+            try:
+                # Validate status via enum
+                _ = JobStatus(status)
+                stmt = stmt.where(Job.status == status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail={"code": "INVALID_STATUS"})
+        items = db.execute(stmt.offset(offset).limit(limit)).scalars().all()
+
+        def to_obj(job: Job):
+            progress = Progress(percent=job.progress_percent, eta_seconds=job.progress_eta_seconds)
+            artifacts = None
+            if job.artifacts:
+                artifacts = {"video_url": job.artifacts.video_url, "video_path": job.artifacts.video_path}
+            ts = {
+                "queued_at": to_cn_iso(job.created_at),
+                "started_at": to_cn_iso(job.started_at),
+                "updated_at": to_cn_iso(job.updated_at),
+                "ended_at": to_cn_iso(job.ended_at),
+            }
+            return {
+                "session_id": job.session_id,
+                "job_id": job.job_id,
+                "status": job.status,
+                "progress": progress.model_dump() if hasattr(progress, 'model_dump') else progress.dict(),
+                "artifacts": artifacts,
+                "template_id": job.template_id,
+                "timestamps": ts,
+            }
+
+        return {"jobs": [to_obj(j) for j in items]}
 
 @router.post("")
 async def create_job(req: CreateJobRequest, registry: TemplateRegistry = Depends(get_registry)):
@@ -48,12 +85,16 @@ async def get_job(job_id: str, x_client: Optional[str] = Header(default=None)):
         progress = Progress(percent=job.progress_percent, eta_seconds=job.progress_eta_seconds)
         artifacts = None
         if job.artifacts:
-            artifacts = {"video_url": job.artifacts.video_url}
+            artifacts = {
+                "video_url": job.artifacts.video_url,
+                "video_path": job.artifacts.video_path,
+            }
 
         ts = {
             "queued_at": to_cn_iso(job.created_at),
             "started_at": to_cn_iso(job.started_at),
             "updated_at": to_cn_iso(job.updated_at),
+            "ended_at": to_cn_iso(job.ended_at),
         }
 
         client = (x_client or "").lower()
@@ -85,12 +126,16 @@ async def get_job_progress(job_id: str):
         progress = Progress(percent=job.progress_percent, eta_seconds=job.progress_eta_seconds)
         artifacts = None
         if job.artifacts:
-            artifacts = {"video_url": job.artifacts.video_url}
+            artifacts = {
+                "video_url": job.artifacts.video_url,
+                "video_path": job.artifacts.video_path,
+            }
         
         ts = {
             "queued_at": to_cn_iso(job.created_at),
             "started_at": to_cn_iso(job.started_at),
             "updated_at": to_cn_iso(job.updated_at),
+            "ended_at": to_cn_iso(job.ended_at),
         }
 
         return JobNoParamsResponse(
