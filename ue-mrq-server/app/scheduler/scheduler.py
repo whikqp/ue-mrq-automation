@@ -16,6 +16,7 @@ class Scheduler:
         self.registry = registry
         self._th: threading.Thread | None = None
         self._stop = threading.Event()
+        self._workers: list[threading.Thread] = []
 
     def start(self):
         if self._th and self._th.is_alive():
@@ -58,6 +59,24 @@ class Scheduler:
             template = self.registry.get(job.template_id)
             if not template:
                 job.status = JobStatus.failed.value; db.commit(); return
-            
-            # TODO: implement multi-process/task queue
-            run_job(db, job, template)
+
+            # set job status to starting, to avoid concurrency window competition
+            job.status = JobStatus.starting.value
+            db.commit()
+
+            # running job in background thread
+            def _worker(job_id: str, tpl: dict):
+                from ..db.database import session_scope as _session_scope
+                from ..db.models import Job as _Job
+                try:
+                    with _session_scope() as _db:
+                        _job = _db.query(_Job).filter(_Job.job_id == job_id).first()
+                        if not _job:
+                            return
+                        run_job(_db, _job, tpl)
+                except Exception:
+                    pass
+
+            th = threading.Thread(target=_worker, args=(job.job_id, template), daemon=True)
+            th.start()
+            self._workers.append(th)

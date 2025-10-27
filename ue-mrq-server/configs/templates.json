@@ -9,6 +9,16 @@
       "map_path":"/Game/Maps/Map0.Map0",
       "level_sequence": "/Game/Seqs/Seq1.Seq1",
       "params": {}
+    },
+    {
+      "template_id": "Seq2",
+      "level_path": "Seq2",
+      "template_name": "",
+      "template_desc": "",
+      "map_name": "Map0",
+      "map_path":"/Game/Maps/Map0.Map0",
+      "level_sequence": "/Game/Seqs/Seq2.Seq2",
+      "params": {}
     }
   ]
 }
