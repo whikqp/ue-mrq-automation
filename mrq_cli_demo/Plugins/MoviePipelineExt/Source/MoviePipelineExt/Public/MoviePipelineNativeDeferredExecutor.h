@@ -119,6 +119,7 @@ private:
 	// State tracking for optimized status notifications
 	EMovieRenderPipelineState LastPipelineState = EMovieRenderPipelineState::Finished;
 	ERenderJobStatus LastReportedStatus = ERenderJobStatus::queued;
+	bool bExportFinalUpdateSent = false;
 
 	// Throttling configuration and state
 	double LastProgressReportTime = 0.0;

@@ -14,6 +14,8 @@
 #include "ShaderCompiler.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/DefaultValueHelper.h"
+#include "HttpModule.h"
+#include "HttpManager.h"
 
 #define LOCTEXT_NAMESPACE "MoviePipelineExecutorExt"
 
@@ -90,6 +92,7 @@ void UMoviePipelineNativeDeferredExecutor::Execute_Implementation(UMoviePipeline
 {
 
 	InitFromCommandLineParams();
+	bExportFinalUpdateSent = false;
 
     CheckGameModeOverrides();
 
@@ -192,6 +195,11 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 	if (PipelineState == LastPipelineState && PipelineState != EMovieRenderPipelineState::ProducingFrames && PipelineState != EMovieRenderPipelineState::Export)
 	{
 		return;
+	}
+
+	if (PipelineState != EMovieRenderPipelineState::Export)
+	{
+		bExportFinalUpdateSent = false;
 	}
 	
 	FString PipelineStateName = EnumToString<EMovieRenderPipelineState>(PipelineState);
@@ -353,12 +361,20 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 				break;
 			}
 
-			const float TotalProgress = 1.f + EncodingProgress;	
+			const float TotalProgress = 1.f + EncodingProgress;
 			const double CurrentTime = FPlatformTime::Seconds();
 			const bool bStateChanged = LastPipelineState != EMovieRenderPipelineState::Export;
 			const bool bIntervalElapsed = (CurrentTime - LastProgressReportTime) >= ProgressReportInterval;
 			const bool bProgressStepReached = TotalProgress >= LastReportedProgress + ProgressReportStep;
-			const bool bForceUpdate = EncodingProgress >= 1.f - KINDA_SMALL_NUMBER;
+			const bool bEncodingComplete = EncodingProgress >= 1.f - KINDA_SMALL_NUMBER;
+
+			// If the final completion status has already been sent, it will not be sent again to avoid the accumulation of HTTP requests.
+			if (bEncodingComplete && bExportFinalUpdateSent)
+			{
+				break;
+			}
+
+			const bool bForceUpdate = bEncodingComplete && !bExportFinalUpdateSent;
 
 			if (bStateChanged || bForceUpdate || bProgressStepReached || bIntervalElapsed)
 			{
@@ -368,7 +384,7 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 				const bool bHasShotEta = ExtractEncodingEtaSeconds(ProgressEtaSeconds);
 				if (!bHasShotEta)
 				{
-					ProgressEtaSeconds = (EncodingProgress >= 1.f - KINDA_SMALL_NUMBER) ? 0 : -1;
+					ProgressEtaSeconds = bEncodingComplete ? 0 : -1;
 				}
 				
 				JsonWrapper.JsonObject.Get()->SetStringField(TEXT("status"), GetStatusString(ERenderJobStatus::encoding));
@@ -381,6 +397,11 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 
 				LastProgressReportTime = CurrentTime;
 				LastReportedProgress = TotalProgress;
+
+				if (bEncodingComplete)
+				{
+					bExportFinalUpdateSent = true;
+				}
 			}
 			break;	
 		}
@@ -554,6 +575,7 @@ void UMoviePipelineNativeDeferredExecutor::OnExecutorFinishedImpl()
 void UMoviePipelineNativeDeferredExecutor::SendHttpOnMoviePipelineWorkFinished(
     const FMoviePipelineOutputData& MoviePipelineOutputData)
 {
+	UE_LOG(LogTemp, Log, TEXT("%s"), ANSI_TO_TCHAR(__FUNCTION__));
 	bool bSuccess = MoviePipelineOutputData.bSuccess;
 
 	const FString InURL = FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/render-complete"), *CurrentJobId);
@@ -569,6 +591,11 @@ void UMoviePipelineNativeDeferredExecutor::SendHttpOnMoviePipelineWorkFinished(
 	TMap<FString, FString> InHeaders;
 	InHeaders.Add(TEXT("Content-Type"), TEXT("application/json"));
 	int32 RequestIndex = SendHTTPRequest(InURL, InVerb, InMessage, InHeaders);
+
+	// After the request is made, block and wait for the HTTP manager to complete the tasks in the queue,
+	// ensuring /render-complete
+	// actually send it out before the engine exits to avoid staying in the encoding state.
+	FHttpModule::Get().GetHttpManager().Flush(EHttpFlushReason::FullFlush);
 }
 
 void UMoviePipelineNativeDeferredExecutor::WaitShaderCompilingComplete()
