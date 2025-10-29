@@ -56,6 +56,7 @@ void UMoviePipelineNativeDeferredExecutor::InitFromCommandLineParams()
 
     }
 
+	FParse::Value(FCommandLine::Get(), TEXT("-MRQServerBaseUrl="), MRQServerBaseUrl);
 }
 
 void UMoviePipelineNativeDeferredExecutor::CheckGameModeOverrides()
@@ -276,7 +277,7 @@ void UMoviePipelineNativeDeferredExecutor::OnBeginFrame_Implementation()
 		return false;
 	};
 	
-	const FString InURL = FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/progress"), *CurrentJobId);
+	const FString InURL = FString::Printf(TEXT("%sue-notifications/job/%s/progress"), *MRQServerBaseUrl, *CurrentJobId);
 	const FString InVerb = TEXT("POST");
 	FString InMessage;
 	TMap<FString, FString> InHeaders;
@@ -578,7 +579,7 @@ void UMoviePipelineNativeDeferredExecutor::SendHttpOnMoviePipelineWorkFinished(
 	UE_LOG(LogTemp, Log, TEXT("%s"), ANSI_TO_TCHAR(__FUNCTION__));
 	bool bSuccess = MoviePipelineOutputData.bSuccess;
 
-	const FString InURL = FString::Printf(TEXT("http://127.0.0.1:8080/ue-notifications/job/%s/render-complete"), *CurrentJobId);
+	const FString InURL = FString::Printf(TEXT("%sue-notifications/job/%s/render-complete"), *MRQServerBaseUrl, *CurrentJobId);
 	const FString InVerb = TEXT("POST");
 	FString InMessage;
 	FJsonObjectWrapper JsonObjectWrapper;

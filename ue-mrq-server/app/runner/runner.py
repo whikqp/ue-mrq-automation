@@ -71,6 +71,8 @@ def run_job(db: Session, job: Job, template: dict) -> None:
 
     movie_fmt = req_payload.get("format") # "mp4" or "mov"
 
+    mrq_server_base_url = req_payload.get("mrq_server_base_url") or None
+
     ue_cmd = build_ue_cmd(
         map_path=template.get("map_path"),
         level_sequence=template.get("level_sequence"),
@@ -78,7 +80,8 @@ def run_job(db: Session, job: Job, template: dict) -> None:
         log_path=ue_log_absolute,
         movie_quality=str(quality_num),
         movie_format=movie_fmt,
-        game_mode_class=settings.GAME_MODE_CLASS
+        game_mode_class=settings.GAME_MODE_CLASS,
+        mrq_server_base_url=mrq_server_base_url,
     )
 
     debug_cmd_str = subprocess.list2cmdline(ue_cmd)

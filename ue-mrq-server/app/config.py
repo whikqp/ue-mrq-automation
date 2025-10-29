@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     # Misc
     API_KEY: str | None = None
+    MRQ_SERVER_BASE_URL: str | None = None
 
     class Config:
         env_file = ".env"

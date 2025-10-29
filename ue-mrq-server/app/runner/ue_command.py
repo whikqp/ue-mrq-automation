@@ -16,6 +16,7 @@ def build_ue_cmd(
     movie_format: str | None = "mp4",
     movie_pipeline_config: str | None = None,
     game_mode_class: str | None = None,
+    mrq_server_base_url: str | None = None,
     ) -> list[str]:
     
     final_cmd_list = [
@@ -48,6 +49,9 @@ def build_ue_cmd(
 
     if movie_format is not None:
         final_cmd_list.append(f"-MovieFormat={movie_format}")
+
+    if mrq_server_base_url is not None:
+        final_cmd_list.append(f"-MRQServerBaseUrl={mrq_server_base_url}")
 
     final_cmd_list.extend(
         [

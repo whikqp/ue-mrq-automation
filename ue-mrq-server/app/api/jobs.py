@@ -1,7 +1,7 @@
 import json, uuid, math
 from datetime import datetime
 from typing import Optional, Union
-from fastapi import APIRouter, HTTPException, Depends, Header, Query
+from fastapi import APIRouter, HTTPException, Depends, Header, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.storage.oss_adapter import *
@@ -12,6 +12,7 @@ from ..models.status import JobStatus
 from ..utils.time import to_cn_iso
 from ..deps import get_registry
 from ..templates.loader import TemplateRegistry
+from ..config import settings
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -53,7 +54,7 @@ async def list_jobs(status: Optional[str] = Query(default=None), limit: int = Qu
         return {"jobs": [to_obj(j) for j in items]}
 
 @router.post("")
-async def create_job(req: CreateJobRequest, registry: TemplateRegistry = Depends(get_registry)):
+async def create_job(req: CreateJobRequest, request: Request, registry: TemplateRegistry = Depends(get_registry)):
     tpl = registry.get(req.template_id)
     if not tpl:
         raise HTTPException(status_code=400, detail={"code":"TEMPLATE_NOT_FOUND","message":"unknown template_id"})
@@ -61,9 +62,14 @@ async def create_job(req: CreateJobRequest, registry: TemplateRegistry = Depends
     job_id = str(uuid.uuid4())
     
     try:
-        payload = json.dumps(req.model_dump(), ensure_ascii=False)
+        #payload = json.dumps(req.model_dump(), ensure_ascii=False)
+        payload_dict = req.model_dump()
     except AttributeError:
-        payload = json.dumps(req.dict(), ensure_ascii=False)
+        payload_dict = req.dict()
+
+    base_url = settings.MRQ_SERVER_BASE_URL or str(request.base_url)
+    payload_dict["mrq_server_base_url"] = base_url
+    payload = json.dumps(payload_dict, ensure_ascii=False)
 
     with session_scope() as db:
         job = Job(job_id=job_id, session_id=req.session_id, template_id=req.template_id, payload=payload)

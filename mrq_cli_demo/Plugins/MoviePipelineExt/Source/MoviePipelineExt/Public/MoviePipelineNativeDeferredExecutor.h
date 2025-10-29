@@ -98,6 +98,7 @@ private:
 	FFrameRate RenderFrameRate = FFrameRate(30, 1);
 
 	FString MovieFormat;
+	FString MRQServerBaseUrl = "http://127.0.0.1:8080/";
 	FString CurrentJobId;
 	FString LevelSequencePath;
 
